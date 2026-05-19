@@ -19,9 +19,9 @@ import boto3
 from botocore.exceptions import ClientError
 
 # Add both zcompute and aws common to path (errors.py lives in aws/scripts/common)
-_scripts_root = __import__("pathlib").Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(_scripts_root))
-sys.path.insert(0, str(_scripts_root.parent / "aws" / "scripts"))
+_here = __import__("pathlib").Path(__file__).resolve()
+sys.path.insert(0, str(_here.parents[1]))           # providers/zcompute/scripts
+sys.path.insert(0, str(_here.parents[3] / "aws" / "scripts"))  # providers/aws/scripts
 from common.errors import delete_with_retry, handle_aws_errors
 
 
