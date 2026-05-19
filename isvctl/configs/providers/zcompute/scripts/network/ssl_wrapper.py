@@ -135,23 +135,52 @@ def _boto3_client_patched(service_name, *args, **kwargs):
             return _orig_get_waiter(waiter_name)
         client.get_waiter = _get_waiter_patched
 
-        # ── Fix run_instances: NetworkInterfaces not reliable in zCompute ────
-        # zCompute returns empty Instances[] when NetworkInterfaces is present
-        # (AssociatePublicIpAddress not supported the same way as AWS).
-        # Remove NetworkInterfaces entirely; merge SubnetId/Groups back to
-        # top-level params where they're already accepted by zCompute.
+        # ── Fix run_instances: zCompute returns empty Instances[] on success ─
+        # zCompute creates the instance but does not include it in the
+        # run_instances response. Also remove NetworkInterfaces (not supported
+        # the same way as AWS — causes silent failure). After the call, if
+        # Instances[] is still empty, poll describe_instances to find the
+        # newly launched instance by key name + most recent launch time.
         _orig_run_instances = client.run_instances
         def _run_instances_patched(**ri_kwargs):
+            # Remove NetworkInterfaces; promote SubnetId/Groups to top-level
             ni_list = ri_kwargs.pop('NetworkInterfaces', None)
             if ni_list:
                 ni = ni_list[0] if ni_list else {}
-                # Promote SubnetId / SecurityGroupIds from NetworkInterfaces
-                # if not already present at top level
                 if not ri_kwargs.get('SubnetId') and ni.get('SubnetId'):
                     ri_kwargs['SubnetId'] = ni['SubnetId']
                 if not ri_kwargs.get('SecurityGroupIds') and ni.get('Groups'):
                     ri_kwargs['SecurityGroupIds'] = ni['Groups']
-            return _orig_run_instances(**ri_kwargs)
+
+            resp = _orig_run_instances(**ri_kwargs)
+
+            # If Instances[] is empty, find the instance we just created
+            if not resp.get('Instances'):
+                key_name = ri_kwargs.get('KeyName', '')
+                deadline = _time.monotonic() + 90
+                while _time.monotonic() < deadline:
+                    _time.sleep(5)
+                    try:
+                        filters = [{'Name': 'instance-state-name',
+                                    'Values': ['pending', 'running']}]
+                        if key_name:
+                            filters.append({'Name': 'key-name',
+                                            'Values': [key_name]})
+                        # _orig_describe_instances captured from enclosing scope
+                        desc = _orig_describe_instances(Filters=filters)
+                        instances = sorted(
+                            [i for r in desc.get('Reservations', [])
+                             for i in r.get('Instances', [])],
+                            key=lambda x: str(x.get('LaunchTime', '')),
+                            reverse=True,
+                        )
+                        if instances:
+                            resp = dict(resp, Instances=[instances[0]])
+                            break
+                    except Exception:
+                        pass
+
+            return resp
         client.run_instances = _run_instances_patched
 
         # ── Fix describe_instances with InstanceIds ───────────────────────────
