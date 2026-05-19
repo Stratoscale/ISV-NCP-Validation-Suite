@@ -102,6 +102,30 @@ for old, new in source_patches.items():
 
 # For isolation_test.py: DescribeVpcPeeringConnections returns InternalFailure in zCompute.
 # Inject a symp-CLI fallback that calls `symp vpc peering list` instead.
+# For sg_crud_test.py: TagSpecifications in CreateSecurityGroup not supported in zCompute.
+# Remove inline tags and use create_tags after creation instead.
+if 'sg_crud_test' in str(target):
+    source = source.replace(
+        '''            TagSpecifications=[
+                {
+                    "ResourceType": "security-group",
+                    "Tags": [
+                        {"Key": "Name", "Value": sg_name},
+                        {"Key": "CreatedBy", "Value": "isvtest"},
+                    ],
+                }
+            ],''',
+        '',
+    )
+    source = source.replace(
+        '        sg_id = sg["GroupId"]',
+        '        sg_id = sg["GroupId"]\n'
+        '        try:\n'
+        '            ec2.create_tags(Resources=[sg_id], Tags=[{"Key": "Name", "Value": sg_name}, {"Key": "CreatedBy", "Value": "isvtest"}])\n'
+        '        except Exception:\n'
+        '            pass',
+    )
+
 if 'isolation_test' in str(target):
     _helper = r'''
 import subprocess as _symp_sp, json as _symp_json, os as _symp_os
