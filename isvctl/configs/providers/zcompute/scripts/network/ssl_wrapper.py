@@ -135,9 +135,25 @@ def _boto3_client_patched(service_name, *args, **kwargs):
             return _orig_get_waiter(waiter_name)
         client.get_waiter = _get_waiter_patched
 
+        # ── Fix describe_key_pairs: zCompute returns empty KeyPairs[] ─────────
+        # AWS raises InvalidKeyPair.NotFound when a key doesn't exist.
+        # zCompute returns {"KeyPairs": []} instead, which causes IndexError
+        # in common.ec2.create_key_pair at describe.get("KeyPairs", [{}])[0].
+        # Simulate the correct AWS error so the except clause can handle it.
+        _orig_describe_key_pairs = client.describe_key_pairs
+        def _describe_key_pairs_patched(**dkp_kwargs):
+            resp = _orig_describe_key_pairs(**dkp_kwargs)
+            if dkp_kwargs.get('KeyNames') and not resp.get('KeyPairs'):
+                from botocore.exceptions import ClientError as _CE
+                raise _CE(
+                    {'Error': {'Code': 'InvalidKeyPair.NotFound',
+                               'Message': 'The key pair does not exist'}},
+                    'DescribeKeyPairs',
+                )
+            return resp
+        client.describe_key_pairs = _describe_key_pairs_patched
+
         # ── Fix create_key_pair: TagSpecifications not supported in zCompute ─
-        # Strips the TagSpecifications param; tags are added via create_tags
-        # after creation if needed (key pairs are internal test resources).
         _orig_create_key_pair = client.create_key_pair
         def _create_key_pair_patched(**ckp_kwargs):
             ckp_kwargs.pop('TagSpecifications', None)
