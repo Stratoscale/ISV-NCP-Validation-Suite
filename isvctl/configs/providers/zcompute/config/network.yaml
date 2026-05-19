@@ -9,18 +9,21 @@
 # Two scripts are zCompute-specific (waiter → poll loop):
 #   create_vpc.py, vpc_crud_test.py
 #
-# Excluded tests (require VMs, or unsupported in zCompute):
-#   - connectivity_test, traffic_validation, dhcp_ip_test — need running instances
-#   - stable_ip_test, floating_ip_test, dns_test — need running instances
-#   - sg_*_scoping — need instances + SSM
+# Excluded tests (unsupported in zCompute):
+#   - connectivity_test, traffic_validation — require SSM agent
+#   - dns_test — requires Route 53 (not available in zCompute)
+#   - sg_*_scoping — subnet scope requires NACLs, service scope requires VPC endpoints
 #   - sdn_* logging — CloudWatch/CloudTrail not available
 #   - byoip_test — BYOIP not supported
 #   - backend_switch_fabric, nvlink_domain — not applicable to zCompute
 #
 # zCompute quirks handled:
 #   - Single AZ (symphony) — require_multi_az overridden to false
-#   - No boto3 waiters — adapted scripts use poll loops
+#   - No boto3 waiters — all replaced with poll loops in ssl_wrapper.py
 #   - VPC transitions through 'pending' before 'available'
+#   - describe_instances vpc-id filter ignored — post-filtered by VpcId in teardown
+#   - t3.micro not available — override via ZCOMPUTE_TEST_INSTANCE_TYPE
+#   - No Amazon Linux AMI — override via ZCOMPUTE_TEST_AMI_ID
 #
 # Usage:
 #   export ZCOMPUTE_BASE_URL=https://172.29.0.20
@@ -28,6 +31,11 @@
 #   export AWS_ACCESS_KEY_ID=<key>
 #   export AWS_SECRET_ACCESS_KEY=<secret>
 #   export AWS_REGION=symphony
+#
+#   # Required for VM-dependent tests (dhcp_ip, stable_ip, floating_ip):
+#   export ZCOMPUTE_TEST_AMI_ID=<ami-id>           # zCompute Ubuntu image ID
+#   export ZCOMPUTE_TEST_INSTANCE_TYPE=z2.3large   # or any available type
+#
 #   uv run isvctl test run -f isvctl/configs/providers/zcompute/config/network.yaml
 
 import:
@@ -86,6 +94,32 @@ commands:
         timeout: 120
         output_schema: security_blocking
 
+      # Test 5: DHCP / IP Management (launches a VM, checks DHCP IP assignment)
+      # AMI resolved from ZCOMPUTE_TEST_AMI_ID env var via ssl_wrapper.py patch
+      - name: dhcp_ip_test
+        phase: test
+        command: "python3 ../scripts/network/ssl_wrapper.py ../../aws/scripts/network/dhcp_ip_test.py"
+        args:
+          - "--vpc-id"
+          - "{{steps.create_network.network_id}}"
+          - "--subnet-id"
+          - "{{steps.create_network.subnets[0].subnet_id}}"
+          - "--sg-id"
+          - "{{steps.create_network.security_group_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 300
+        output_schema: dhcp_ip
+
+      # Test 6: Stable Private IP (stop/start instance, verify IP unchanged)
+      # AMI resolved from ZCOMPUTE_TEST_AMI_ID env var via ssl_wrapper.py patch
+      - name: stable_ip_test
+        phase: test
+        command: "python3 ../scripts/network/ssl_wrapper.py ../../aws/scripts/network/stable_ip_test.py"
+        args: ["--region", "{{region}}", "--cidr", "10.93.0.0/16"]
+        timeout: 600
+        output_schema: stable_ip
+
       # Test 7: VPC IP Configuration (DDI)
       - name: vpc_ip_config
         phase: test
@@ -98,6 +132,15 @@ commands:
         timeout: 120
         output_schema: vpc_ip_config
 
+      # Test 8: Floating IP (EIP attach/detach, verify public IP switches)
+      # AMI resolved from ZCOMPUTE_TEST_AMI_ID env var via ssl_wrapper.py patch
+      - name: floating_ip_test
+        phase: test
+        command: "python3 ../scripts/network/ssl_wrapper.py ../../aws/scripts/network/floating_ip_test.py"
+        args: ["--region", "{{region}}", "--cidr", "10.92.0.0/16"]
+        timeout: 600
+        output_schema: floating_ip
+
       # Test 13: VPC Peering (confirmed working in zCompute)
       - name: peering_test
         phase: test
@@ -106,7 +149,7 @@ commands:
         timeout: 180
         output_schema: vpc_peering
 
-      # Teardown: AWS script — instance waiter only fires if VMs exist (none here)
+      # Teardown: post-filters by VpcId (vpc-id filter ignored in zCompute)
       - name: teardown
         phase: teardown
         command: "python3 ../scripts/network/ssl_wrapper.py ../../aws/scripts/network/teardown.py"
@@ -120,7 +163,7 @@ commands:
 
 tests:
   cluster_name: "zcompute-network-validation"
-  description: "zCompute network validation: VPC, subnets, SG, isolation, peering"
+  description: "zCompute network validation: VPC, subnets, SG, isolation, peering, DHCP, stable IP, floating IP"
 
   settings:
     region: "symphony"
@@ -138,14 +181,12 @@ tests:
 
   exclude:
     tests:
-      # VM-dependent tests
+      # SSM-dependent — SSM agent not available in zCompute
       - NetworkConnectivityCheck
       - TrafficFlowCheck
-      - DhcpIpManagementCheck
-      - StablePrivateIpCheck
-      - FloatingIpCheck
+      # DNS — Route 53 not available in zCompute
       - LocalizedDnsCheck
-      # SG scoping requires running instances + SSM
+      # SG scoping — subnet scope needs NACLs, service scope needs VPC endpoints
       - SgWorkloadScopingCheck
       - SgNodeScopingCheck
       - SgSubnetScopingCheck

@@ -33,15 +33,79 @@ try:
 except Exception:
     pass
 
-# Patch 2: boto3.client("ec2").create_vpc — auto-poll until 'available'
-# zCompute VPCs start in 'pending' state; tagging/subnets fail until available.
+# Patch 2: boto3 EC2 client — replace waiters and auto-poll VPC state.
+# zCompute does not support boto3 waiters (neither VPC nor instance state).
 import time as _time
 import boto3 as _boto3
 _orig_boto3_client = _boto3.client
 
+
+class _ZComputeInstanceWaiter:
+    """Poll-based replacement for boto3 instance state waiters."""
+    _STATE_MAP = {
+        'instance_running': 'running',
+        'instance_stopped': 'stopped',
+        'instance_terminated': 'terminated',
+        'instance_status_ok': 'running',
+    }
+
+    def __init__(self, ec2_client, target_state, timeout=300, interval=10):
+        self._ec2 = ec2_client
+        self._target = target_state
+        self._timeout = timeout
+        self._interval = interval
+
+    def wait(self, InstanceIds=None, **_):
+        if not InstanceIds:
+            return
+        deadline = _time.monotonic() + self._timeout
+        while _time.monotonic() < deadline:
+            try:
+                resp = self._ec2.describe_instances(InstanceIds=InstanceIds)
+                states = [
+                    i['State']['Name']
+                    for r in resp['Reservations']
+                    for i in r['Instances']
+                ]
+                if states and all(s == self._target for s in states):
+                    return
+            except Exception:
+                pass
+            _time.sleep(self._interval)
+        raise RuntimeError(
+            f"Instances {InstanceIds} did not reach '{self._target}' "
+            f"within {self._timeout}s"
+        )
+
+
+class _ZComputeVpcWaiter:
+    """Poll-based replacement for the vpc_available boto3 waiter."""
+    def __init__(self, ec2_client, timeout=120, interval=5):
+        self._ec2 = ec2_client
+        self._timeout = timeout
+        self._interval = interval
+
+    def wait(self, VpcIds=None, **_):
+        if not VpcIds:
+            return
+        deadline = _time.monotonic() + self._timeout
+        while _time.monotonic() < deadline:
+            try:
+                resp = self._ec2.describe_vpcs(VpcIds=VpcIds)
+                if all(v['State'] == 'available' for v in resp['Vpcs']):
+                    return
+            except Exception:
+                pass
+            _time.sleep(self._interval)
+        raise RuntimeError(
+            f"VPCs {VpcIds} did not reach 'available' within {self._timeout}s"
+        )
+
+
 def _boto3_client_patched(service_name, *args, **kwargs):
     client = _orig_boto3_client(service_name, *args, **kwargs)
     if service_name == 'ec2':
+        # Auto-poll VPC until 'available' on create (no waiters in zCompute)
         _orig_create_vpc = client.create_vpc
         def _create_vpc_with_wait(**vpc_kwargs):
             resp = _orig_create_vpc(**vpc_kwargs)
@@ -57,7 +121,21 @@ def _boto3_client_patched(service_name, *args, **kwargs):
                 _time.sleep(5)
             return resp
         client.create_vpc = _create_vpc_with_wait
+
+        # Replace all boto3 EC2 waiters with poll-based implementations
+        _orig_get_waiter = client.get_waiter
+        def _get_waiter_patched(waiter_name):
+            if waiter_name == 'vpc_available':
+                return _ZComputeVpcWaiter(client)
+            if waiter_name in _ZComputeInstanceWaiter._STATE_MAP:
+                return _ZComputeInstanceWaiter(
+                    client, _ZComputeInstanceWaiter._STATE_MAP[waiter_name]
+                )
+            return _orig_get_waiter(waiter_name)
+        client.get_waiter = _get_waiter_patched
+
     return client
+
 
 _boto3.client = _boto3_client_patched
 
@@ -83,16 +161,13 @@ sys.argv = [str(target)] + sys.argv[2:]
 os.environ.pop('AWS_CA_BUNDLE', None)
 
 # Apply zCompute-specific source patches before executing the target script.
-# teardown.py: skip instance operations entirely — no VMs in network tests,
-# and zCompute's vpc-id filter on describe_instances may return all account instances.
-# Also remove the instance_terminated waiter (not supported by zCompute).
+# teardown.py: zCompute's vpc-id filter on describe_instances is ignored — returns
+# ALL project instances. Post-filter in Python by VpcId so only instances that
+# belong to the target VPC are terminated. All waiters are handled above via
+# get_waiter monkey-patch — no source-level waiter skipping needed.
 source_patches = {
-    'waiter = ec2.get_waiter("instance_terminated")':
-        '# waiter skipped (zCompute)',
-    'waiter.wait(InstanceIds=instance_ids)':
-        'pass  # waiter skipped (zCompute)',
-    '    for reservation in instances["Reservations"]:':
-        '    for reservation in []:  # zCompute: skip instance ops in network tests',
+    '        for instance in reservation["Instances"]:':
+        '        for instance in [i for i in reservation["Instances"] if i.get("VpcId") == vpc_id]:  # zCompute: post-filter by VpcId',
 }
 source = target.read_text()
 
@@ -196,6 +271,40 @@ def _symp_describe_vpc_peering_connections(**kwargs):
     source = source.replace(
         'ec2.describe_vpc_peering_connections(',
         '_symp_describe_vpc_peering_connections(',
+    )
+
+# All network test scripts default to t3.micro — not available in zCompute.
+# Override via ZCOMPUTE_TEST_INSTANCE_TYPE (required for VM-dependent tests).
+_instance_type = os.environ.get('ZCOMPUTE_TEST_INSTANCE_TYPE', '')
+if _instance_type:
+    source = source.replace('INSTANCE_TYPE = "t3.micro"', f'INSTANCE_TYPE = "{_instance_type}"')
+    source = source.replace('InstanceType="t3.micro"', f'InstanceType="{_instance_type}"')
+elif 'run_instances' in source or 'InstanceType' in source:
+    raise RuntimeError(
+        "ZCOMPUTE_TEST_INSTANCE_TYPE is not set. "
+        "Export it before running VM-dependent network tests "
+        "(e.g. export ZCOMPUTE_TEST_INSTANCE_TYPE=z2.3large)"
+    )
+
+# dhcp_ip_test, stable_ip_test, floating_ip_test need a zCompute image.
+# Override via ZCOMPUTE_TEST_AMI_ID (required for all three).
+if any(t in str(target) for t in ('dhcp_ip_test', 'stable_ip_test', 'floating_ip_test')):
+    _ami_id = os.environ.get('ZCOMPUTE_TEST_AMI_ID', '')
+    if not _ami_id:
+        raise RuntimeError(
+            "ZCOMPUTE_TEST_AMI_ID is not set. "
+            "Export a valid zCompute image ID before running this test "
+            "(e.g. export ZCOMPUTE_TEST_AMI_ID=ami-8269e586aa484003948818fadcbb475a)"
+        )
+    # stable_ip / floating_ip: replace function import
+    source = source.replace(
+        'from common.ec2 import get_amazon_linux_ami',
+        f'get_amazon_linux_ami = lambda ec2: "{_ami_id}"',
+    )
+    # dhcp_ip_test: replace find_ubuntu_ami call (used when --ami-id not passed)
+    source = source.replace(
+        'ami_id = args.ami_id or find_ubuntu_ami(ec2)',
+        f'ami_id = args.ami_id or "{_ami_id}"',
     )
 
 # Single AZ: zCompute only has 'symphony'; accept min_azs=1 everywhere.
