@@ -22,7 +22,10 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parents[1]))
+# Add both zcompute and aws common to path (errors.py lives in aws/scripts/common)
+_scripts_root = __import__("pathlib").Path(__file__).parents[1]
+sys.path.insert(0, str(_scripts_root))
+sys.path.insert(0, str(_scripts_root.parents[1] / "aws" / "scripts"))
 from common.errors import classify_aws_error
 
 
