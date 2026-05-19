@@ -1,0 +1,121 @@
+# zcompute EKS-D Kubernetes Validation Configuration
+#
+# Targets a pre-deployed EKS-D (Amazon EKS Distro) v1.30 cluster on zcompute.
+# The cluster is static — setup/teardown scripts query it, they do not provision it.
+#
+# Cluster topology:
+#   - 1 control-plane node  (k8s-master-sa-1)
+#   - 1+ CPU worker nodes   (ASG-managed, k8s-worker-*)
+#   - 1 GPU worker node     (hgx-worker, zh1.52xlarge, 8× H100 SXM5 80GB)
+#
+# GPU Operator: nvidia-gpu-operator namespace, driver 535.161.08, CUDA 12.2
+# Storage:      ebs-sc (block, ebs.csi.aws.com — zcompute AWS-compatible EBS)
+# CNI:          Flannel
+#
+# Usage:
+#   export KUBECONFIG=path/to/config-eksd-nkqa11
+#   export PYTHONPATH=isvctl/src:isvtest/src:isvreporter/src
+#   uv run isvctl test run -f isvctl/configs/providers/zcompute/config/k8s.yaml -v
+#
+# Optional (to enable NIM tests):
+#   export NGC_API_KEY=<your_key>
+
+import:
+  - ../../../suites/k8s.yaml
+
+version: "1.0"
+
+commands:
+  kubernetes:
+    phases: ["setup", "test", "teardown"]
+    steps:
+      - name: setup
+        phase: setup
+        command: "../scripts/k8s/setup.sh"
+        output_schema: cluster
+        timeout: 120
+
+      - name: create_test_node_pool
+        phase: setup
+        command: "../scripts/k8s/create_node_pool.sh"
+        output_schema: node_pool
+        timeout: 60
+        env:
+          TF_VAR_test_pool_name: "isv-test-pool"
+          TF_VAR_test_pool_instance_types: '["m6i.large"]'
+          TF_VAR_test_pool_desired_size: "1"
+          TF_VAR_test_pool_labels_json: '{"isv.ncp.validation/workload":"data-ingest"}'
+          TF_VAR_test_pool_taints_json: '[{"key":"isv.ncp.validation/dedicated","value":"test","effect":"NoSchedule"}]'
+          TF_VAR_test_pool_node_type: "cpu"
+
+      - name: update_test_node_pool
+        phase: test
+        command: "../scripts/k8s/create_node_pool.sh"
+        output_schema: node_pool
+        timeout: 60
+        env:
+          NODE_POOL_ACTION: "Updating"
+          TF_VAR_test_pool_name: "isv-test-pool"
+          TF_VAR_test_pool_instance_types: '["m6i.large"]'
+          TF_VAR_test_pool_desired_size: "2"
+          TF_VAR_test_pool_labels_json: '{"isv.ncp.validation/workload":"data-ingest"}'
+          TF_VAR_test_pool_taints_json: '[{"key":"isv.ncp.validation/dedicated","value":"test","effect":"NoSchedule"}]'
+          TF_VAR_test_pool_node_type: "cpu"
+
+      - name: destroy_test_node_pool
+        phase: teardown
+        command: "../scripts/k8s/destroy_node_pool.sh"
+        timeout: 60
+
+      - name: teardown
+        phase: teardown
+        command: "../scripts/k8s/teardown.sh"
+        timeout: 60
+
+tests:
+  description: "zcompute EKS-D GPU cluster validation (K8s v1.30, 8× H100)"
+
+  validations:
+    k8s_workloads:
+      checks:
+        K8sNcclMultiNodeWorkload:
+          # Routed RoCE via switch: large msgs (≥256MB) hit 105-115 GB/s; arithmetic avg
+          # across all NCCL sizes (8B–4GB) lands at ~31 GB/s due to latency-dominated
+          # small messages. Suite default of 100 targets direct P2P InfiniBand.
+          min_bus_bw_gbps: 30
+
+    kubernetes:
+      checks:
+        K8sNodeCountCheck:
+          count: "{{ steps.setup.kubernetes.node_count | default(4, true) }}"
+        K8sGpuCapacityCheck:
+          resource_name: "nvidia.com/gpu"
+          expected_per_node: 8
+          expected_total: 16
+        K8sMigConfigCheck:
+          require_mig: false
+          expected_labels:
+            "nvidia.com/mig.capable": "true"
+            "nvidia.com/mig.strategy": "single"
+
+  exclude:
+    tests:
+      # Static cluster — no managed node pool API
+      - K8sNodePoolCheck
+
+      # OIDC not configured on this EKS-D cluster
+      - K8sOidcIssuerCheck
+
+      # Flannel does not enforce NetworkPolicy
+      - K8sNetworkPolicyCheck
+
+      # Requires an external (out-of-allow-list) vantage point to probe from
+      - K8sApiNetworkAclCheck
+
+      # CNCF conformance is a long-running suite (hours) — run separately
+      - K8sCncfConformanceCheck
+
+      # NIM workloads require NGC_API_KEY — enable when available
+      - K8sNimInferenceWorkload
+      - K8sNimHelmWorkload-1b
+      - K8sNimHelmWorkload-3b

@@ -166,3 +166,84 @@ forwarded env vars → optional isvreporter upload.
 | `KUBECTL` | Optional kubectl-compatible CLI prefix (POSIX `shlex` in Python, word-split in shell; overrides `K8S_PROVIDER` detection) | isvtest `get_kubectl_command`, isvctl k8s scripts |
 | `ISVCTL_DEMO_MODE` | `"1"` makes `my-isv` scripts return dummy success | scripts |
 | `AWS_SKIP_TEARDOWN` | Skip teardown phase (run later with `--phase teardown`) | AWS configs |
+
+---
+
+## zcompute Provider (Zadara)
+
+This repo contains a `providers/zcompute/` implementation targeting Zadara's zcompute
+platform, which exposes AWS-compatible EC2/IAM/STS endpoints. See the full compatibility
+report at `isvctl/configs/providers/zcompute/COMPATIBILITY_REPORT.md`.
+
+### Clusters
+
+| Cluster | IP | Purpose | Credentials |
+|---------|-----|---------|-------------|
+| Test cluster (no GPUs) | 172.16.10.110 | Control-plane, IAM, network probing | `AWS_ACCESS_KEY_ID=4c5b5685...` |
+| HGX cluster (GPU) | 172.29.0.20 | VM suite, full certification run | `AWS_ACCESS_KEY_ID=b52b7b82...` |
+
+### Running zcompute suites
+
+```bash
+# Required for all suites
+export ZCOMPUTE_BASE_URL=https://172.16.10.110   # or 172.29.0.20 for HGX
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+export AWS_REGION=symphony
+
+# Required for running (uv editable install issue on Mac)
+export PYTHONPATH=isvctl/src:isvtest/src:isvreporter/src
+
+# Run control-plane (test cluster)
+uv run isvctl test run -f isvctl/configs/providers/zcompute/config/control-plane.yaml -v
+
+# Run IAM (test cluster)
+uv run isvctl test run -f isvctl/configs/providers/zcompute/config/iam.yaml -v
+
+# Run VM (HGX cluster — must run from manager VM or machine with network access to 172.28.x.x)
+uv run isvctl test run -f isvctl/configs/providers/zcompute/config/vm.yaml -v
+
+# Reuse existing VM instance (skip launch cost)
+export ZCOMPUTE_VM_INSTANCE_ID=i-xxx
+export ZCOMPUTE_VM_KEY_FILE=/path/to/key.pem
+uv run isvctl test run -f isvctl/configs/providers/zcompute/config/vm.yaml -v
+```
+
+### zcompute API endpoint pattern
+
+```
+https://<cluster-ip>/api/v2/aws/<service>/
+```
+
+All boto3 clients use `get_client(service)` from `providers/zcompute/scripts/common/client.py`,
+which constructs the per-service URL from `ZCOMPUTE_BASE_URL` and sets `verify=False`.
+
+### Known zcompute differences from AWS
+
+| Behavior | AWS | zcompute |
+|----------|-----|----------|
+| Endpoint | Per-service DNS | `https://<ip>/api/v2/aws/<service>/` |
+| SSL | Valid cert | Self-signed → `verify=False` |
+| Region | e.g. `us-east-1` | `symphony` |
+| AZ | Multiple | Single: `symphony` (type: `local-zone`) |
+| Access key ID format | `AKIA...` (20 chars) | 32-char hex string |
+| VPC state at create | `available` immediately | `pending` then `available` — must poll |
+| Public IP at launch | Auto-assigned | Empty string — must allocate + associate EIP |
+| Start cycle | `stopped → running` | `stopped → pending → stopped → pending → running` (~4 min) |
+| Root device | `/dev/sda1` | `/dev/vda` |
+| NVIDIA modules | Pre-loaded in DLAMI | Must `modprobe nvidia nvidia-uvm nvidia-modeset` after boot |
+| `iam:UpdateAccessKey` | Supported | `NotImplementedException` — certification blocker |
+| `iam:ListUserPolicies` | Supported | `AuthFailure` — skip in delete script |
+| `resource-groups` API | Supported | Not available — tenant modeled as IAM Group |
+| `--owners self` in describe-images | Works | Returns empty — omit owner filter |
+| boto3 waiters | Supported | Not supported — use custom poll loops |
+| `describe-instance-types` GPU info | Populated | Returns `GPU={}` empty |
+
+### zcompute HGX GPU details
+
+- Instance type: `zh1.52xlarge` (208 vCPUs, ~1.87 TB RAM)
+- GPUs: 8× NVIDIA H100 SXM5 80GB HBM3 + 4× NVSwitch (full NVLink mesh)
+- Driver: 580.126.20, CUDA 13.0
+- Ubuntu 24.04 AMI: `ami-8269e586aa484003948818fadcbb475a`
+- GPU modules need loading after boot: `sudo modprobe nvidia nvidia-uvm nvidia-modeset`
+- Suite must run from manager VM (`ubuntu@amit-manager-vm`) — HGX public IPs (`172.28.x.x`) not routable from external machines

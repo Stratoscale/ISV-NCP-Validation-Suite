@@ -38,7 +38,18 @@ spec:
                     --bind-to none --map-by slot \
                     -mca plm_rsh_args "-o StrictHostKeyChecking=no -o IdentityFile=/tmp/id_rsa" \
                     -x NCCL_DEBUG=INFO -x LD_LIBRARY_PATH \
+                    -x NCCL_IB_DISABLE -x NCCL_IB_HCA -x NCCL_IB_GID_INDEX -x NCCL_NET_GDR_LEVEL \
+                    -x UCX_TLS=tcp,sm,cuda_copy,cuda_ipc \
                     /usr/local/bin/all_reduce_perf_mpi -b 8 -e 4G -f 2 -g 1
+              env:
+                - name: NCCL_IB_DISABLE
+                  value: "0"
+                - name: NCCL_IB_HCA
+                  value: "^rocep75s0"  # exclude broken NIC (duplicate .16 IP on both nodes)
+                - name: NCCL_IB_GID_INDEX
+                  value: "3"           # RoCE v2 — valid unique IPs on the remaining NICs
+                - name: NCCL_NET_GDR_LEVEL
+                  value: "0"           # host-bounce buffers; set to 2 only if nvidia_peermem is loaded
           affinity:
             nodeAffinity:
               requiredDuringSchedulingIgnoredDuringExecution:
@@ -62,12 +73,25 @@ spec:
                   port: 22
                 initialDelaySeconds: 2
                 periodSeconds: 3
+              env:
+                - name: NCCL_IB_DISABLE
+                  value: "0"
+                - name: NCCL_IB_HCA
+                  value: "^rocep75s0"  # exclude broken NIC (duplicate .16 IP on both nodes)
+                - name: NCCL_IB_GID_INDEX
+                  value: "3"           # RoCE v2 — valid unique IPs on the remaining NICs
+                - name: NCCL_NET_GDR_LEVEL
+                  value: "0"           # host-bounce buffers; set to 2 only if nvidia_peermem is loaded
+              securityContext:
+                privileged: true       # required to open /dev/infiniband/uverbs* (cgroup device whitelist)
               resources:
                 limits:
                   nvidia.com/gpu: 4 # overridden at runtime by K8sNcclMultiNodeWorkload
               volumeMounts:
                 - name: shm
                   mountPath: /dev/shm
+                - name: infiniband
+                  mountPath: /dev/infiniband
           nodeSelector:
             nvidia.com/gpu.present: "true"
           runtimeClassName: nvidia
@@ -76,6 +100,9 @@ spec:
               operator: "Exists"
               effect: "NoSchedule"
           volumes:
+            - name: infiniband
+              hostPath:
+                path: /dev/infiniband  # exposes host RoCE/IB verbs devices without a device plugin
             - name: shm
               emptyDir:
                 medium: Memory

@@ -1,0 +1,70 @@
+# zcompute IAM Validation Configuration
+#
+# Imports the provider-agnostic IAM suite and wires up zcompute scripts.
+#
+# Steps:
+#   1. create_user  — creates IAM user + access key
+#   2. test_credentials — verifies new key authenticates via STS + IAM
+#   3. teardown     — deletes access keys and user
+#
+# zcompute adaptations vs AWS:
+#   - All boto3 clients use per-service endpoint URLs via ZCOMPUTE_BASE_URL
+#   - SSL verification disabled (self-signed certs)
+#   - ListUserPolicies not implemented — inline policy cleanup skipped in teardown
+#   - DeleteUser works without detaching policies first
+#   - No key propagation delay (keys usable immediately)
+#
+# Usage:
+#   export ZCOMPUTE_BASE_URL=https://172.16.10.110
+#   export AWS_ACCESS_KEY_ID=...
+#   export AWS_SECRET_ACCESS_KEY=...
+#   export AWS_REGION=symphony
+#   uv run isvctl test run -f isvctl/configs/providers/zcompute/config/iam.yaml
+
+import:
+  - ../../../suites/iam.yaml
+
+version: "1.0"
+
+commands:
+  iam:
+    phases: ["setup", "test", "teardown"]
+    steps:
+      - name: create_user
+        phase: setup
+        command: "python3 ../scripts/iam/create_user.py"
+        args:
+          - "--username"
+          - "isv-test-user"
+          - "--create-access-key"
+        timeout: 60
+
+      - name: test_credentials
+        phase: test
+        command: "python3 ../scripts/iam/test_credentials.py"
+        args:
+          - "--access-key-id"
+          - "{{steps.create_user.access_key_id}}"
+          - "--secret-access-key"
+          - "{{steps.create_user.secret_access_key}}"
+          - "--region"
+          - "{{region}}"
+        sensitive_args: ["--secret-access-key"]
+        timeout: 60
+
+      - name: teardown
+        phase: teardown
+        command: "python3 ../scripts/iam/delete_user.py"
+        args:
+          - "--username"
+          - "{{steps.create_user.username}}"
+          - "{{teardown_flag}}"
+        timeout: 60
+
+tests:
+  cluster_name: "zcompute-iam-validation"
+  description: "zcompute IAM user lifecycle: create, authenticate, teardown"
+
+  settings:
+    region: "symphony"
+    teardown_flag: "{{(env.IAM_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"

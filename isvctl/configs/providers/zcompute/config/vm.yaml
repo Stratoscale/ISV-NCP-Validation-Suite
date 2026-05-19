@@ -1,0 +1,232 @@
+# zcompute VM (GPU) Validation Configuration
+#
+# Imports the provider-agnostic VM test suite and wires up zcompute scripts.
+# Targets the HGX cluster (172.29.0.20) with zh1.52xlarge GPU instances.
+#
+# zcompute adaptations:
+#   - All boto3 clients use per-service endpoint URLs via ZCOMPUTE_BASE_URL
+#   - SSL verification disabled (self-signed certs)
+#   - No auto public IP — launch script allocates + associates an EIP
+#   - No boto3 waiters — scripts use custom polling loops
+#   - NVIDIA modules loaded via SSH after launch/start/reboot
+#   - Root device /dev/vda (not /dev/sda)
+#   - Single AZ (symphony), so no multi-AZ subnet selection
+#   - Start cycle takes ~4-5 min with intermediate stopped state
+#   - SerialConsoleCheck and ConsoleRbacCheck excluded (not implemented)
+#   - NIM tests excluded until NGC_API_KEY is configured
+#
+# Usage:
+#   export ZCOMPUTE_BASE_URL=https://172.29.0.20
+#   export AWS_ACCESS_KEY_ID=...
+#   export AWS_SECRET_ACCESS_KEY=...
+#   export AWS_REGION=symphony
+#   PYTHONPATH=isvctl/src:isvtest/src:isvreporter/src \
+#     uv run isvctl test run -f isvctl/configs/providers/zcompute/config/vm.yaml
+#
+# To reuse an existing instance (skip launch cost):
+#   export ZCOMPUTE_VM_INSTANCE_ID=i-xxx
+#   export ZCOMPUTE_VM_KEY_FILE=/path/to/key.pem
+
+import:
+  - ../../../suites/vm.yaml
+
+version: "1.0"
+
+commands:
+  vm:
+    phases: ["setup", "test", "teardown"]
+    steps:
+      - name: launch_instance
+        phase: setup
+        command: "python3 ../scripts/vm/launch_instance.py"
+        args:
+          - "--name"
+          - "isv-test-gpu"
+          - "--instance-type"
+          - "{{instance_type}}"
+          - "--region"
+          - "{{region}}"
+          - "--ami-id"
+          - "{{ami_id}}"
+        # Launch (~10 min) + Docker + CUDA toolkit via NVIDIA repo (~20 min) + NCT + driver verify = ~40 min
+        timeout: 2700
+
+      - name: list_instances
+        phase: test
+        command: "python3 ../scripts/vm/list_instances.py"
+        args:
+          - "--vpc-id"
+          - "{{steps.launch_instance.vpc_id}}"
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 120
+
+      - name: verify_tags
+        phase: test
+        command: "python3 ../scripts/vm/describe_tags.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 60
+
+      - name: serial_console
+        phase: test
+        command: "python3 ../scripts/vm/serial_console.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 60
+        continue_on_failure: true
+
+      - name: console_rbac
+        phase: test
+        command: "python3 ../scripts/vm/console_rbac.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 60
+        continue_on_failure: true
+
+      - name: stop_instance
+        phase: test
+        command: "python3 ../scripts/vm/stop_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 600
+
+      - name: start_instance
+        phase: test
+        command: "python3 ../scripts/vm/start_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--pre-start-delay"
+          - "600"
+        # zcompute: 10 min resource release wait + up to 3 retries of (6 min poll + 2 min wait) + SSH + buffer
+        timeout: 2400
+
+      - name: reboot_instance
+        phase: test
+        command: "python3 ../scripts/vm/reboot_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--public-ip"
+          - "{{steps.start_instance.public_ip}}"
+          - "--wait-before-check"
+          - "90"
+        timeout: 900
+
+      - name: describe_instance
+        phase: test
+        command: "python3 ../scripts/vm/describe_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+        timeout: 120
+
+      # NIM deployment excluded until NGC_API_KEY is configured
+      - name: deploy_nim
+        phase: test
+        command: "python3 ../scripts/vm/console_rbac.py"
+        args: ["--instance-id", "{{steps.launch_instance.instance_id}}", "--region", "{{region}}"]
+        timeout: 60
+        skip: true
+
+      - name: teardown_nim
+        phase: teardown
+        command: "python3 ../scripts/vm/console_rbac.py"
+        args: ["--instance-id", "{{steps.launch_instance.instance_id}}", "--region", "{{region}}"]
+        timeout: 60
+        skip: true
+
+      - name: teardown
+        phase: teardown
+        command: "python3 ../scripts/vm/teardown.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--eip-allocation-id"
+          - "{{steps.launch_instance.eip_allocation_id}}"
+          - "--delete-key-pair"
+          - "--delete-security-group"
+          - "{{teardown_flag}}"
+        timeout: 600
+
+tests:
+  cluster_name: "zcompute-vm-validation"
+  description: "zcompute GPU VM lifecycle: launch, stop/start/reboot, GPU check, teardown"
+
+  settings:
+    region: "symphony"
+    instance_type: "zh1.52xlarge"
+    ami_id: "ami-8269e586aa484003948818fadcbb475a"
+    teardown_flag: "{{(env.VM_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
+
+  # Override GPU count — zh1.52xlarge has 8x H100 SXM5, not 1
+  validations:
+    gpu:
+      step: describe_instance
+      checks:
+        GpuCheck:
+          expected_gpus: 8
+
+    host_os:
+      step: describe_instance
+      checks:
+        VcpuPinningCheck: {}
+        PciBusCheck:
+          expected_gpus: 8
+        HostSoftwareCheck: {}
+
+    start_gpu:
+      step: start_instance
+      checks:
+        GpuCheck:
+          expected_gpus: 8
+
+    reboot_gpu:
+      step: reboot_instance
+      checks:
+        GpuCheck:
+          expected_gpus: 8
+
+  exclude:
+    tests:
+      # Not implemented in zcompute — scripts return not_supported gracefully
+      - SerialConsoleCheck
+      - ConsoleRbacCheck
+      # NIM tests require NGC_API_KEY and Docker setup — enable when ready
+      - NimHealthCheck
+      - NimModelCheck
+      - NimInferenceCheck
+      - StepSuccessCheck-teardown_nim
+      # DriverCheck cuda_toolkit subtest: if nvcc install fails (package not in
+      # ubuntu repos for this kernel), this check will still fail. Remove this
+      # exclusion once the GPU-ready image has CUDA toolkit pre-installed.
+      # - DriverCheck
