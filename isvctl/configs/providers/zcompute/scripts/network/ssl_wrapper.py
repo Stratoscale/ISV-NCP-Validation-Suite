@@ -288,8 +288,28 @@ os.environ.pop('AWS_CA_BUNDLE', None)
 # belong to the target VPC are terminated. All waiters are handled above via
 # get_waiter monkey-patch — no source-level waiter skipping needed.
 source_patches = {
+    # zCompute: vpc-id filter on describe_instances is ignored — post-filter by VpcId
     '        for instance in reservation["Instances"]:':
         '        for instance in [i for i in reservation["Instances"] if i.get("VpcId") == vpc_id]:  # zCompute: post-filter by VpcId',
+    # After deleting VPC, also release any unassociated EIPs tagged CreatedBy=isvtest
+    '    deleted["vpc"] = vpc_id\n\n    return deleted':
+        '    deleted["vpc"] = vpc_id\n\n'
+        '    # zCompute: release EIPs allocated by this test suite\n'
+        '    try:\n'
+        '        _eips = ec2.describe_addresses()\n'
+        '        for _eip in _eips.get("Addresses", []):\n'
+        '            if _eip.get("AssociationId"):\n'
+        '                continue\n'
+        '            _tags = {t["Key"]: t["Value"] for t in _eip.get("Tags", [])}\n'
+        '            if _tags.get("CreatedBy") == "isvtest":\n'
+        '                try:\n'
+        '                    ec2.release_address(AllocationId=_eip["AllocationId"])\n'
+        '                    deleted.setdefault("eips", []).append(_eip["AllocationId"])\n'
+        '                except Exception:\n'
+        '                    pass\n'
+        '    except Exception:\n'
+        '        pass\n\n'
+        '    return deleted',
 }
 source = target.read_text()
 
@@ -409,16 +429,25 @@ elif 'run_instances' in source or 'InstanceType' in source:
     )
 
 # dhcp_ip_test: zCompute doesn't auto-assign public IPs to instances.
-# Fall back to private IP so the SSH check can proceed (works when the
-# toolbox and the test VPC share a routed zCompute network).
+# Allocate an EIP, associate it with the instance, and use it as public_ip.
+# The EIP is tagged CreatedBy=isvtest so teardown can release it.
 if 'dhcp_ip_test' in str(target):
     source = source.replace(
         '        if not result["public_ip"]:\n'
         '            result["error"] = "Instance launched but no public IP assigned"\n'
         '            print(json.dumps(result, indent=2))\n'
         '            return 1',
-        '        if not result["public_ip"]:\n'
-        '            result["public_ip"] = result.get("private_ip")  # zCompute: no EIP, use private IP',
+        '        if not result["public_ip"] and result.get("instance_id"):\n'
+        '            _eip = ec2.allocate_address(Domain="vpc")\n'
+        '            _alloc_id = _eip["AllocationId"]\n'
+        '            result["eip_allocation_id"] = _alloc_id\n'
+        '            try:\n'
+        '                ec2.create_tags(Resources=[_alloc_id], Tags=[{"Key": "CreatedBy", "Value": "isvtest"}])\n'
+        '            except Exception:\n'
+        '                pass\n'
+        '            ec2.associate_address(InstanceId=result["instance_id"], AllocationId=_alloc_id)\n'
+        '            import time as _eip_t; _eip_t.sleep(5)\n'
+        '            result["public_ip"] = _eip["PublicIp"]',
     )
 
 # dhcp_ip_test, stable_ip_test, floating_ip_test need a zCompute image.
