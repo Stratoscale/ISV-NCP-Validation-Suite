@@ -398,6 +398,15 @@ def setup_gpu_dependencies(host: str, user: str, key_file: str) -> dict[str, boo
         "nvidia_smi_accessible": False,
     }
 
+    # ── 0. Diagnostics: show nvidia version state before we touch anything ───
+    diag = _ssh(
+        "echo '=== KMOD ===' && (cat /sys/module/nvidia/version 2>/dev/null || echo 'not loaded') && "
+        "echo '=== DPKG nvidia-utils ===' && (dpkg -l 'nvidia-utils-*' 2>/dev/null | grep '^ii' || echo 'none') && "
+        "echo '=== DPKG linux-modules-nvidia ===' && (dpkg -l 'linux-modules-nvidia-*' 2>/dev/null | grep '^ii' || echo 'none') && "
+        "echo '=== nvidia-smi ===' && (nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>&1 | head -1 || echo 'failed')"
+    )
+    print(f"[setup] pre-install nvidia state:\n{diag.stdout}", file=sys.stderr)
+
     # ── 1. Docker CE ─────────────────────────────────────────────────────────
     print("[setup] installing Docker ...", file=sys.stderr)
     docker_cmds = (
@@ -486,6 +495,15 @@ def setup_gpu_dependencies(host: str, user: str, key_file: str) -> dict[str, boo
     r = _ssh(restore_cmds, timeout=120)
     results["nvidia_smi_accessible"] = r.returncode == 0
     print(f"[setup] nvidia-smi restore: {r.stdout.strip()}", file=sys.stderr)
+
+    # ── 5. Post-install diagnostics: verify version consistency ─────────────
+    diag2 = _ssh(
+        "echo '=== KMOD ===' && (cat /sys/module/nvidia/version 2>/dev/null || echo 'not loaded') && "
+        "echo '=== DPKG nvidia-utils ===' && (dpkg -l 'nvidia-utils-*' 2>/dev/null | grep '^ii' || echo 'none') && "
+        "echo '=== DPKG linux-modules-nvidia ===' && (dpkg -l 'linux-modules-nvidia-*' 2>/dev/null | grep '^ii' | head -3 || echo 'none') && "
+        "echo '=== nvidia-smi ===' && (nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>&1 | head -1 || echo 'failed')"
+    )
+    print(f"[setup] post-install nvidia state:\n{diag2.stdout}", file=sys.stderr)
 
     print(f"[setup] GPU dependencies complete: {results}", file=sys.stderr)
     return results
