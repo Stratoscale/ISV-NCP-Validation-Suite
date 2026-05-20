@@ -31,3 +31,4 @@ isv-ncp-validation-suite*.tar.gz
 
 # Trivy local / CI artifact (default output name)
 *.sarif
+isvctl/configs/providers/zcompute/suite.env
