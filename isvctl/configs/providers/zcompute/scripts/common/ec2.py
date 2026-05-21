@@ -372,6 +372,13 @@ def load_nvidia_modules(host: str, user: str, key_file: str) -> bool:
             f"{persist_result.stderr.strip()}",
             file=sys.stderr,
         )
+
+    # Restart Docker so the NVIDIA container runtime picks up the freshly
+    # loaded kernel modules. Without this restart, `docker run --gpus all`
+    # fails with "could not select device driver" after stop/start or reboot.
+    r = _ssh("sudo systemctl restart docker 2>/dev/null || true", timeout=30)
+    print("[ec2] Docker restarted to pick up NVIDIA modules", file=sys.stderr)
+
     return True
 
 
