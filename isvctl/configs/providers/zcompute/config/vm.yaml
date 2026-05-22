@@ -191,7 +191,7 @@ tests:
   settings:
     region: "symphony"
     instance_type: "zh1.52xlarge"
-    ami_id: "ami-8269e586aa484003948818fadcbb475a"
+    ami_id: "{{env.ZCOMPUTE_TEST_AMI_ID | default('ami-241c9a9e96d143dc90e1a5a50a3a8152')}}"  # isv-ncp-gpu-baked-20260522
     teardown_flag: "{{(env.VM_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
 
   # Override GPU count — zh1.52xlarge has 8x H100 SXM5, not 1
