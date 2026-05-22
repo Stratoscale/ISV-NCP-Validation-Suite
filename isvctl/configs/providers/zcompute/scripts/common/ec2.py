@@ -405,7 +405,34 @@ def setup_gpu_dependencies(host: str, user: str, key_file: str) -> dict[str, boo
         "nvidia_smi_accessible": False,
     }
 
-    # ── 0. Diagnostics: show nvidia version state before we touch anything ───
+    # ── 0. Fix any pre-existing NVML mismatch BEFORE touching apt ────────────
+    # The AMI may already have a kernel module / userspace library mismatch.
+    # Fix it immediately using the loaded kernel module version as source of truth,
+    # before any other apt operations can make things worse.
+    print("[setup] pre-flight: fixing nvidia-utils to match loaded kernel module ...", file=sys.stderr)
+    preflight = _ssh(
+        "KMOD_VER=$(cat /sys/module/nvidia/version 2>/dev/null || echo '') && "
+        "KMOD_MAJOR=$(echo \"$KMOD_VER\" | cut -d. -f1) && "
+        "echo \"[setup] KMOD_VER=${KMOD_VER:-not_loaded}, KMOD_MAJOR=${KMOD_MAJOR:-unknown}\" && "
+        "if [ -n \"$KMOD_MAJOR\" ]; then "
+        "  if ! nvidia-smi --query-gpu=driver_version --format=csv,noheader > /dev/null 2>&1; then "
+        "    echo \"[setup] nvidia-smi broken pre-flight, installing nvidia-utils-${KMOD_MAJOR}-server\" && "
+        "    ( sudo apt-get install -y --allow-downgrades --no-install-recommends "
+        "        nvidia-utils-${KMOD_MAJOR}-server 2>&1 || "
+        "      sudo apt-get install -y --allow-downgrades --no-install-recommends "
+        "        nvidia-utils-${KMOD_MAJOR} 2>&1 || "
+        "      echo \"[setup] WARNING: no nvidia-utils package found for major ${KMOD_MAJOR}\" ) && "
+        "    sudo ldconfig && "
+        "    echo \"[setup] post-preflight nvidia-smi: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>&1 | head -1)\"; "
+        "  else "
+        "    echo \"[setup] nvidia-smi OK pre-flight, no fix needed\"; "
+        "  fi; "
+        "fi",
+        timeout=180,
+    )
+    print(f"[setup] pre-flight result: {preflight.stdout.strip()}", file=sys.stderr)
+
+    # ── 0.1 Diagnostics: show nvidia version state before we touch anything ──
     diag = _ssh(
         "echo '=== KMOD ===' && (cat /sys/module/nvidia/version 2>/dev/null || echo 'not loaded') && "
         "echo '=== DPKG nvidia-utils ===' && (dpkg -l 'nvidia-utils-*' 2>/dev/null | grep '^ii' || echo 'none') && "

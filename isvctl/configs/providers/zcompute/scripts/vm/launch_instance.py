@@ -314,18 +314,27 @@ def main() -> int:
             except Exception as e:
                 print(f"[launch] WARNING: setup_gpu_dependencies failed (non-fatal): {e}", file=sys.stderr)
 
-            # Post-setup nvidia diagnostic — captured in JSON so it appears in the isvctl log.
+            # Post-setup nvidia diagnostic — written to /tmp/nvidia_diag.txt on toolbox
+            # so it's readable after the run regardless of isvctl log capture.
             import subprocess as _diag_sp
             _diag = _diag_sp.run(
                 ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
+                 "-o", "UserKnownHostsFile=/dev/null",
                  "-o", "BatchMode=yes", "-i", key_file, f"{args.ssh_user}@{public_ip}",
-                 "echo KMOD=$(cat /sys/module/nvidia/version 2>/dev/null || echo N/A) && "
-                 "echo UTILS=$(dpkg -l 'nvidia-utils-*' 2>/dev/null | awk '/^ii/{print $2,$3}' | head -3 | tr '\\n' '|') && "
-                 "echo MLSO=$(ldconfig -p 2>/dev/null | grep libnvidia-ml | head -3 | tr '\\n' '|') && "
-                 "nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>&1 | head -1"],
+                 "echo '=== KMOD ===' && (cat /sys/module/nvidia/version 2>/dev/null || echo N/A) && "
+                 "echo '=== nvidia-utils dpkg ===' && (dpkg -l 'nvidia-utils-*' 'libnvidia-ml*' 2>/dev/null | grep '^ii' || echo none) && "
+                 "echo '=== libnvidia-ml ldconfig ===' && (ldconfig -p 2>/dev/null | grep libnvidia-ml || echo none) && "
+                 "echo '=== nvidia-smi ===' && nvidia-smi 2>&1 | head -10"],
                 capture_output=True, text=True, timeout=30,
             )
-            result["nvidia_diag"] = (_diag.stdout.strip() + _diag.stderr.strip())[:500]
+            diag_text = _diag.stdout.strip() or _diag.stderr.strip() or "no output"
+            result["nvidia_diag"] = diag_text[:800]
+            # Write to a file on the local machine (toolbox) so it survives isvctl log swallowing.
+            try:
+                with open("/tmp/nvidia_diag.txt", "w") as _f:
+                    _f.write(diag_text)
+            except Exception:
+                pass
 
     except ClientError as e:
         result["error"] = str(e)
