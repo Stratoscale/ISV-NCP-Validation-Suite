@@ -11,16 +11,20 @@ in `COMPATIBILITY_REPORT.md`.
 
 ### 1. Set environment variables
 
-All credentials live in one file — fill it in and source it before every run:
+All credentials live in `~/suite-zcompute.env` (kept outside the repo to avoid
+git noise — it is gitignored if placed inside). Source it before every run:
 
 ```bash
-# Edit suite.env with your cluster credentials, then:
-source isvctl/configs/providers/zcompute/suite.env
+source ~/suite-zcompute.env
 ```
 
 Key variables: `ZCOMPUTE_BASE_URL`, `AWS_ENDPOINT_URL_EC2`, `AWS_ACCESS_KEY_ID`,
 `AWS_SECRET_ACCESS_KEY`, `AWS_REGION=symphony`, `SYMP_*`, `ZCOMPUTE_TEST_AMI_ID`,
 `ZCOMPUTE_TEST_INSTANCE_TYPE`, `NGC_API_KEY`.
+
+> **Note:** `SYMP_*` variables are only required for the control-plane suite
+> (`disable_access_key`) and the network suite (VPC peering fallback). The VM
+> suite does not use the `symp` CLI.
 
 ### 2. Install dependencies
 
@@ -90,7 +94,7 @@ providers/zcompute/
 │   ├── control-plane/
 │   ├── k8s/
 │   └── common/      ← ec2.py (load_nvidia_modules, setup_gpu_dependencies, EIP utils)
-├── suite.env        ← All environment variables (fill in and source before running)
+├── (suite.env)      ← Credentials file — keep at ~/suite-zcompute.env, not here
 ├── CLUSTER-SETUP.md ← EKS-D cluster setup runbook
 └── COMPATIBILITY_REPORT.md ← Detailed API compatibility notes and test history
 ```
