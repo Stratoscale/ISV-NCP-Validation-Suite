@@ -84,6 +84,8 @@ ok "Cluster reachable"
 log "§1 Calico CNI ..."
 if kubectl get deployment calico-kube-controllers -n calico-system >/dev/null 2>&1; then
     skip "Calico"
+elif kubectl get daemonset cilium -n kube-system >/dev/null 2>&1; then
+    skip "Calico — Cilium CNI already present, NetworkPolicy is enforced by Cilium"
 else
     kubectl create -f \
         "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml" \
@@ -168,6 +170,8 @@ else
         --namespace kube-system \
         --set "controller.env[0].name=AWS_EC2_ENDPOINT" \
         --set "controller.env[0].value=https://${ZCOMPUTE_IP}/api/v2/aws/ec2/" \
+        --set "controller.env[1].name=AWS_REGION" \
+        --set "controller.env[1].value=symphony" \
         --set controller.extraVolumeTags.environment=ncp-validation
 
     # Default StorageClass
