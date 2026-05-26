@@ -28,7 +28,8 @@ else
 fi
 
 CLUSTER_NAME=$($KUBECTL config current-context 2>/dev/null || echo "eksd-zcompute")
-DEFAULT_GPU_NS="nvidia-gpu-operator"
+# zadara-vm-chart deploys GPU Operator into zadara-system, not the upstream default
+DEFAULT_GPU_NS="zadara-system"
 REQUIRE_JQ="true"
 
 # Source shared inventory logic (copied from my-isv provider)

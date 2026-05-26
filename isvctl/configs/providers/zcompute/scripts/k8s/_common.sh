@@ -77,8 +77,9 @@ fi
 
 # --- GPU operator namespace ---
 GPU_OPERATOR_NS=""
-for ns in gpu-operator gpu-operator-resources nvidia-gpu-operator; do
-    if $KUBECTL get namespace "$ns" &> /dev/null; then
+for ns in gpu-operator gpu-operator-resources nvidia-gpu-operator zadara-system; do
+    # Check if this namespace actually contains a gpu-operator deployment
+    if $KUBECTL get deployment gpu-operator -n "$ns" &> /dev/null 2>&1; then
         GPU_OPERATOR_NS="$ns"
         break
     fi
