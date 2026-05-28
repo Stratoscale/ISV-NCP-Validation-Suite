@@ -92,6 +92,10 @@ tests:
           # across all NCCL sizes (8B–4GB) lands at ~31 GB/s due to latency-dominated
           # small messages. Suite default of 100 targets direct P2P InfiniBand.
           min_bus_bw_gbps: 30
+          # Workers take 3-4 min to start (GPU device plugin reclaims resources from the
+          # just-completed single-node NCCL pod) + ~80s for apt-get install openssh-server.
+          # Default 300s is not enough; 600s covers the full startup window comfortably.
+          startup_timeout: 600
 
         K8sNimHelmWorkload-3b:
           # Override suite default (gpu_per_node=8) — NIM 3b with 8× H100 on zCompute
