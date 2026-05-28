@@ -71,6 +71,10 @@ tests:
       - K8sCsiTenantScopedCredentialsCheck
       - K8sCsiProvisioningModesCheck
       - K8sOidcIssuerCheck
+      # Single-node NCCL is consistently passing (110 GB/s); exclude it here
+      # to avoid its --wait=false cleanup holding GPUs when multi-node starts.
+      # Run the full k8s.yaml suite to validate both together.
+      - K8sNcclWorkload
       - K8sGpuStressWorkload
       - K8sNimInferenceWorkload
       - K8sNimHelmWorkload-1b
