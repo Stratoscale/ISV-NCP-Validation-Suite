@@ -40,16 +40,19 @@ spec:
                     -x NCCL_DEBUG=INFO -x LD_LIBRARY_PATH \
                     -x NCCL_IB_DISABLE -x NCCL_IB_HCA -x NCCL_IB_GID_INDEX -x NCCL_NET_GDR_LEVEL \
                     -x UCX_TLS=tcp,sm,cuda_copy,cuda_ipc \
+                    -x OMPI_MCA_coll_hcoll_enable \
                     /usr/local/bin/all_reduce_perf_mpi -b 8 -e 4G -f 2 -g 1
               env:
                 - name: NCCL_IB_DISABLE
                   value: "0"
                 - name: NCCL_IB_HCA
-                  value: "^rocep75s0,mlx5_1,mlx5_2,mlx5_5,mlx5_6"  # exclude-list: rocep75s0 (dup IP) + mlx5_1/2/5/6 (no GID index 3 → ibv_modify_qp ENODEV); include-list breaks launcher (control-plane has no mlx5 devices → HPC-X ORTE fatal)
+                  value: "^rocep75s0,mlx5_1,mlx5_2,mlx5_5,mlx5_6"  # exclude-list: rocep75s0 (dup IP) + mlx5_1/2/5/6 (ibv_modify_qp ENODEV); leaves 4 NICs (mlx5_0,3,4,7)
                 - name: NCCL_IB_GID_INDEX
                   value: "3"           # RoCE v2 — valid unique IPs on the remaining NICs
                 - name: NCCL_NET_GDR_LEVEL
                   value: "0"           # host-bounce buffers; set to 2 only if nvidia_peermem is loaded
+                - name: OMPI_MCA_coll_hcoll_enable
+                  value: "0"           # disable HCOLL; with 4 NICs HCOLL's 8-NIC requirement causes MPI_Init exit code 3
           tolerations:
             - key: "node-role.kubernetes.io/control-plane"
               operator: "Exists"
@@ -81,11 +84,13 @@ spec:
                 - name: NCCL_IB_DISABLE
                   value: "0"
                 - name: NCCL_IB_HCA
-                  value: "^rocep75s0,mlx5_1,mlx5_2,mlx5_5,mlx5_6"  # exclude-list: rocep75s0 (dup IP) + mlx5_1/2/5/6 (no GID index 3 → ibv_modify_qp ENODEV); include-list breaks launcher (control-plane has no mlx5 devices → HPC-X ORTE fatal)
+                  value: "^rocep75s0,mlx5_1,mlx5_2,mlx5_5,mlx5_6"  # exclude-list: rocep75s0 (dup IP) + mlx5_1/2/5/6 (ibv_modify_qp ENODEV); leaves 4 NICs (mlx5_0,3,4,7)
                 - name: NCCL_IB_GID_INDEX
                   value: "3"           # RoCE v2 — valid unique IPs on the remaining NICs
                 - name: NCCL_NET_GDR_LEVEL
                   value: "0"           # host-bounce buffers; set to 2 only if nvidia_peermem is loaded
+                - name: OMPI_MCA_coll_hcoll_enable
+                  value: "0"           # disable HCOLL; with 4 NICs HCOLL's 8-NIC requirement causes MPI_Init exit code 3
               securityContext:
                 privileged: true       # required to open /dev/infiniband/uverbs* (cgroup device whitelist)
               resources:
