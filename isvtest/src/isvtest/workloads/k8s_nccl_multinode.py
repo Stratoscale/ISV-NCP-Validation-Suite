@@ -575,9 +575,10 @@ class K8sNcclMultiNodeWorkload(BaseWorkloadCheck):
             self.set_failed(nccl.error, output=nccl.output)
             return
 
-        if min_bus_bw > 0 and nccl.avg_bus_bw_gbps < min_bus_bw:
+        if min_bus_bw > 0 and nccl.max_bus_bw_gbps < min_bus_bw:
             self.set_failed(
-                f"Bus bandwidth {nccl.avg_bus_bw_gbps:.2f} GB/s below minimum threshold {min_bus_bw} GB/s",
+                f"Max bus bandwidth {nccl.max_bus_bw_gbps:.2f} GB/s below minimum threshold {min_bus_bw} GB/s"
+                f" (avg across all message sizes: {nccl.avg_bus_bw_gbps:.2f} GB/s)",
                 output=logs,
             )
             return
