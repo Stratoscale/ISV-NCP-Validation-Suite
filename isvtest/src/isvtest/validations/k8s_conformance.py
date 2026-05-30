@@ -202,6 +202,14 @@ class K8sCncfConformanceCheck(BaseValidation):
                 )
                 return
 
+            # Save JUnit XML to disk for post-mortem analysis
+            save_path = self.config.get("save_junit_path", "/tmp/conformance-junit.xml")
+            try:
+                Path(save_path).write_text(junit_xml)
+                self.log.info(f"Saved JUnit XML to {save_path}")
+            except OSError as exc:
+                self.log.warning(f"Could not save JUnit XML to {save_path}: {exc}")
+
             summary = self._parse_junit(junit_xml)
 
             if report_individual:
@@ -222,8 +230,16 @@ class K8sCncfConformanceCheck(BaseValidation):
             if summary.total == 0:
                 self.set_failed(f"{msg} - no testcases parsed from JUnit output")
             elif summary.failed > 0:
-                failed_names = [c.name for c in summary.cases if not c.passed and not c.skipped][:10]
-                self.set_failed(msg, output="First failures:\n" + "\n".join(failed_names))
+                failed_cases = [c for c in summary.cases if not c.passed and not c.skipped][:10]
+                failure_lines = []
+                for c in failed_cases:
+                    failure_lines.append(c.name)
+                    if c.message:
+                        # Trim to first 800 chars so the report stays readable
+                        trimmed = c.message[:800].rstrip()
+                        for line in trimmed.splitlines():
+                            failure_lines.append(f"    {line}")
+                self.set_failed(msg, output="First failures:\n" + "\n".join(failure_lines))
             else:
                 self.set_passed(msg)
 
