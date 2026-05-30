@@ -42,6 +42,7 @@ spec:
                     -x UCX_TLS=tcp,sm,cuda_copy,cuda_ipc \
                     -x OMPI_MCA_coll_hcoll_enable \
                     -x OMPI_MCA_coll_fca_enable \
+                    -x NCCL_NCHANNELS_PER_NET_PEER \
                     /usr/local/bin/all_reduce_perf_mpi -b 8 -e 4G -f 2 -g 1
               env:
                 - name: NCCL_IB_DISABLE
@@ -56,6 +57,8 @@ spec:
                   value: "0"           # disable HCOLL (requires 8 NICs; we only have 4 active)
                 - name: OMPI_MCA_coll_fca_enable
                   value: "0"           # disable FCA (same requirement)
+                - name: NCCL_NCHANNELS_PER_NET_PEER
+                  value: "2"           # 2 net channels per inter-node GPU pair → engages 2 NICs per pair (4 total across 2 pairs)
           tolerations:
             - key: "node-role.kubernetes.io/control-plane"
               operator: "Exists"
@@ -79,6 +82,36 @@ spec:
                 - -c
                 - |
                   command -v sshd >/dev/null || { apt-get update -qq && apt-get install -y -qq openssh-server >/dev/null 2>&1; }
+                  # Root cause of only 2/4 NICs being used: ECMP routing.
+                  # Each network (10.20.0.0/15, 10.22.0.0/15) has 4 equal-cost routes on different
+                  # interfaces. When IBext_v8 calls ibv_modify_qp for mlx5_1/mlx5_2, the kernel's
+                  # neighbor lookup for the peer IP may hash to the wrong interface, causing QP
+                  # establishment failure. IBext_v8 then skips those NICs.
+                  #
+                  # Fix: add specific /31 routes for each peer subnet. /31 beats /15 via longest-
+                  # prefix match, guaranteeing the correct egress interface for each NIC pair.
+                  # Also convert STALE ARP entries to PERMANENT so neighbor lookup always succeeds.
+                  #
+                  # IP pattern: NIC local IP is X.X.X.D/31 (D always even).
+                  #   D >= 8  → this is node-0; peer subnet is X.X.X.(D-16)/31
+                  #   D  < 8  → this is node-1; peer subnet is X.X.X.(D+16)/31
+                  for i in 0 1 2 3; do
+                    eth=$(ls /sys/class/infiniband/mlx5_${i}/device/net/ 2>/dev/null | head -1)
+                    [ -z "$eth" ] && continue
+                    local_ip=$(ip -4 addr show dev "$eth" 2>/dev/null | grep -oP '\d+\.\d+\.\d+\.\d+(?=/31)' | head -1)
+                    [ -z "$local_ip" ] && continue
+                    base="${local_ip%.*}"; last="${local_ip##*.}"
+                    [ $((last % 2)) -ne 0 ] && continue
+                    gw="${base}.$((last + 1))"
+                    # Harden gateway ARP: upgrade STALE to PERMANENT (preserves existing MAC)
+                    mac=$(ip neigh show dev "$eth" 2>/dev/null | awk "/^${gw} / && /lladdr/{print \$5}" | head -1)
+                    [ -n "$mac" ] && ip neigh replace "$gw" dev "$eth" lladdr "$mac" nud permanent 2>/dev/null && \
+                      echo "ARP permanent: $gw -> $mac on $eth"
+                    # Add specific /31 route for peer subnet to override ECMP /15 routes
+                    if [ "$last" -lt 8 ]; then peer_last=$((last + 16)); else peer_last=$((last - 16)); fi
+                    ip route replace "${base}.${peer_last}/31" via "${gw}" dev "${eth}" 2>/dev/null && \
+                      echo "Route: ${base}.${peer_last}/31 via ${gw} dev ${eth}" || true
+                  done
                   mkdir -p /var/run/sshd && ssh-keygen -A 2>/dev/null && exec /usr/sbin/sshd -De -p 2222 -o PermitRootLogin=yes -o StrictModes=no
               readinessProbe:
                 tcpSocket:
@@ -98,6 +131,8 @@ spec:
                   value: "0"           # disable HCOLL; with 4 NICs HCOLL's 8-NIC requirement causes MPI_Init exit code 3
                 - name: OMPI_MCA_coll_fca_enable
                   value: "0"           # disable FCA (same 8-NIC requirement, same exit code 3 symptom)
+                - name: NCCL_NCHANNELS_PER_NET_PEER
+                  value: "2"           # 2 net channels per inter-node GPU pair → engages 2 NICs per pair (4 total across 2 pairs)
               securityContext:
                 privileged: true       # required to open /dev/infiniband/uverbs* (cgroup device whitelist)
               resources:
