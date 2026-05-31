@@ -88,8 +88,8 @@ tests:
     k8s_workloads:
       checks:
         K8sNcclMultiNodeWorkload:
-          # All 8 RoCE NICs active (unique IPs confirmed). Expecting ~130 GB/s peak.
-          min_bus_bw_gbps: 100
+          # All 8 RoCE NICs + NVSwitch (NVLS tree). Measured peak: ~454 GB/s.
+          min_bus_bw_gbps: 350
           # Workers take 3-4 min to start (GPU device plugin reclaims resources from the
           # just-completed single-node NCCL pod) + ~80s for apt-get install openssh-server.
           # Default 300s is not enough; 600s covers the full startup window comfortably.
