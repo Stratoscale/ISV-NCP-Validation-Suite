@@ -154,7 +154,8 @@ fi
 
 # ── §3. EBS CSI Driver ────────────────────────────────────────────────────────
 log "§3 EBS CSI Driver ..."
-if helm list -n kube-system 2>/dev/null | grep -q aws-ebs-csi-driver; then
+if helm list -n kube-system 2>/dev/null | grep -q aws-ebs-csi-driver || \
+   kubectl get deployment ebs-csi-controller -n zadara-system &>/dev/null; then
     skip "EBS CSI"
 else
     # Credentials secret (idempotent)
@@ -194,7 +195,8 @@ fi
 
 # ── §4. NVIDIA GPU Operator ───────────────────────────────────────────────────
 log "§4 NVIDIA GPU Operator ..."
-if helm list -n nvidia-gpu-operator 2>/dev/null | grep -q gpu-operator; then
+if helm list -n nvidia-gpu-operator 2>/dev/null | grep -q gpu-operator || \
+   kubectl get deployment gpu-operator -n zadara-system &>/dev/null; then
     skip "GPU Operator"
 else
     helm repo add nvidia https://helm.ngc.nvidia.com/nvidia 2>/dev/null || true
