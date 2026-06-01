@@ -141,6 +141,14 @@ commands:
         timeout: 600
         output_schema: floating_ip
 
+      # Test DNS: Localized DNS via Route 53-compatible API on zCompute
+      - name: dns_test
+        phase: test
+        command: "python3 ../scripts/network/ssl_wrapper.py ../../aws/scripts/network/dns_test.py"
+        args: ["--region", "{{region}}", "--cidr", "10.89.0.0/16"]
+        timeout: 120
+        output_schema: localized_dns
+
       # Test 13: VPC Peering (confirmed working in zCompute)
       - name: peering_test
         phase: test
@@ -184,8 +192,8 @@ tests:
       # SSM-dependent — SSM agent not available in zCompute
       - NetworkConnectivityCheck
       - TrafficFlowCheck
-      # DNS — Route 53 not available in zCompute
-      - LocalizedDnsCheck
+      # DNS — under investigation for zCompute support
+      # - LocalizedDnsCheck
       # SG scoping — subnet scope needs NACLs, service scope needs VPC endpoints
       - SgWorkloadScopingCheck
       - SgNodeScopingCheck

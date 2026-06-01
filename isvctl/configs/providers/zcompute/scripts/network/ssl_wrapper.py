@@ -113,6 +113,12 @@ class _ZComputeVpcWaiter:
 
 
 def _boto3_client_patched(service_name, *args, **kwargs):
+    # Inject zCompute Route 53 endpoint when service is route53
+    if service_name == 'route53':
+        base_url = os.environ.get('ZCOMPUTE_BASE_URL', '').rstrip('/')
+        if base_url and 'endpoint_url' not in kwargs:
+            kwargs['endpoint_url'] = f"{base_url}/api/v2/aws/route53/"
+
     client = _orig_boto3_client(service_name, *args, **kwargs)
     if service_name == 'ec2':
 
