@@ -70,6 +70,12 @@ def _get_default_subnet(ec2: Any, vpc_id: str) -> str:
         Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
     )
     subnets = resp.get("Subnets", [])
+    # zCompute may ignore the vpc-id filter — post-filter in Python
+    subnets = [s for s in subnets if s.get("VpcId") == vpc_id]
+    if not subnets:
+        # Fallback: fetch all subnets and post-filter
+        all_subnets = ec2.describe_subnets().get("Subnets", [])
+        subnets = [s for s in all_subnets if s.get("VpcId") == vpc_id]
     if not subnets:
         raise RuntimeError(f"No subnets found in VPC {vpc_id}")
     return subnets[0]["SubnetId"]
