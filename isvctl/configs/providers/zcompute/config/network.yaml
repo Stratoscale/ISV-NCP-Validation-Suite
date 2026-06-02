@@ -149,18 +149,11 @@ commands:
         timeout: 120
         output_schema: localized_dns
 
-      # SG Scoping: workload, subnet, service
+      # SG Scoping: workload only (subnet requires NACLs — not supported; service to investigate)
       - name: sg_workload_scoping
         phase: test
         command: "python3 ../scripts/network/ssl_wrapper.py ../../aws/scripts/network/sg_scoping_test.py"
         args: ["--region", "{{region}}", "--scope", "workload"]
-        timeout: 120
-        output_schema: generic
-
-      - name: sg_subnet_scoping
-        phase: test
-        command: "python3 ../scripts/network/ssl_wrapper.py ../../aws/scripts/network/sg_scoping_test.py"
-        args: ["--region", "{{region}}", "--scope", "subnet"]
         timeout: 120
         output_schema: generic
 
@@ -216,8 +209,9 @@ tests:
       - TrafficFlowCheck
       # DNS — under investigation for zCompute support
       # - LocalizedDnsCheck
-      # SG scoping — testing all 3 on zCompute
-      - SgNodeScopingCheck  # no step configured for node scoping
+      # SG scoping — subnet requires NACLs (not supported), node has no step
+      - SgNodeScopingCheck
+      - SgSubnetScopingCheck  # CreateNetworkAcl returns AuthFailure — platform gap
       # SDN logging — CloudWatch/CloudTrail not in zCompute
       - SdnHardwareFaultLoggingCheck
       - SdnLatencyPerfLoggingCheck
