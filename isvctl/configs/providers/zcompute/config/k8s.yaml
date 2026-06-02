@@ -95,6 +95,11 @@ tests:
           # Default 300s is not enough; 600s covers the full startup window comfortably.
           startup_timeout: 600
 
+        K8sGpuStressWorkload:
+          # gpu-worker-1 runs after NCCL; GPU device plugin needs extra time to reclaim.
+          # Default 300s is too tight — raise to 600s.
+          timeout: 600
+
         K8sNimHelmWorkload-3b:
           # Override suite default (gpu_per_node=8) — NIM 3b with 8× H100 on zCompute
           # tries tensor parallelism which fails (engine profile not found or NVLink/IMEX
