@@ -44,7 +44,7 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
 import boto3
 from botocore.exceptions import ClientError
 from common.errors import handle_aws_errors
-from common.vpc import delete_vpc
+from common.vpc import delete_vpc, settle_after_vpc_available
 
 INTERNAL_DOMAIN = "internal.isv.test"
 
@@ -70,6 +70,10 @@ def create_vpc_with_dns(ec2: Any, cidr: str, name: str) -> dict[str, Any]:
 
         ec2.modify_vpc_attribute(VpcId=vpc_id, EnableDnsSupport={"Value": True})
         ec2.modify_vpc_attribute(VpcId=vpc_id, EnableDnsHostnames={"Value": True})
+
+        # Let the async CoreDNS service VM settle before this VPC can be deleted (fast
+        # create/delete race).
+        settle_after_vpc_available()
 
         result["passed"] = True
         result["vpc_id"] = vpc_id

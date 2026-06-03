@@ -27,6 +27,21 @@ from common.errors import delete_with_retry
 
 logger = logging.getLogger(__name__)
 
+# A VPC's CoreDNS service VM is provisioned asynchronously (nova + vm-manager) after the VPC
+# reports available. Tests that create and then quickly delete a VPC can race that provisioning
+# and orphan the service VM (or kill its boot volume mid-boot). Wait this long after a VPC is
+# available so the service VM is fully created before the caller proceeds to delete it.
+_SERVICE_VM_SETTLE_SECONDS = 30
+
+
+def settle_after_vpc_available() -> None:
+    """Wait for a VPC's async CoreDNS service VM (nova + vm-manager) to finish provisioning.
+
+    Every VPC-creation path should call this once the VPC is available, before the VPC can be
+    deleted - otherwise a fast create/delete races the provisioning and orphans the service VM.
+    """
+    time.sleep(_SERVICE_VM_SETTLE_SECONDS)
+
 
 def create_test_vpc(
     ec2: Any,
@@ -66,6 +81,10 @@ def create_test_vpc(
         if enable_dns:
             ec2.modify_vpc_attribute(VpcId=vpc_id, EnableDnsSupport={"Value": True})
             ec2.modify_vpc_attribute(VpcId=vpc_id, EnableDnsHostnames={"Value": True})
+
+        # Let the asynchronous CoreDNS service VM finish provisioning before the caller can
+        # delete this VPC, otherwise a fast create/delete races and orphans the service VM.
+        settle_after_vpc_available()
 
         result["passed"] = True
         result["cidr"] = cidr
