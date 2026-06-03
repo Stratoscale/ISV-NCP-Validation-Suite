@@ -44,8 +44,8 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
 
 import boto3
 from botocore.exceptions import ClientError
-from common.errors import delete_with_retry, handle_aws_errors
-from common.vpc import create_test_vpc, delete_vpc
+from common.errors import handle_aws_errors
+from common.vpc import create_test_vpc, delete_peering_connections_for_vpc, delete_vpc
 
 
 def create_peering(ec2: Any, vpc_a_id: str, vpc_b_id: str, name: str) -> dict[str, Any]:
@@ -231,12 +231,12 @@ def main() -> int:
     except Exception as e:
         result["error"] = str(e)
     finally:
-        if peering_id:
-            delete_with_retry(
-                ec2.delete_vpc_peering_connection,
-                VpcPeeringConnectionId=peering_id,
-                resource_desc=f"VPC peering connection {peering_id}",
-            )
+        # Remove the peering connection and wait until it's actually gone before deleting the
+        # VPCs - otherwise the VPC delete races the async peering teardown and leaks the VPCs.
+        if vpc_a_id:
+            delete_peering_connections_for_vpc(ec2, vpc_a_id)
+        if vpc_b_id:
+            delete_peering_connections_for_vpc(ec2, vpc_b_id)
         if vpc_a_id:
             delete_vpc(ec2, vpc_a_id)
         if vpc_b_id:

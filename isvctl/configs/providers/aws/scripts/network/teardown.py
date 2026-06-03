@@ -44,6 +44,7 @@ import boto3
 from botocore.exceptions import ClientError
 from common.ec2 import sanitize_key_name
 from common.errors import handle_aws_errors
+from common.vpc import delete_peering_connections_for_vpc
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ def teardown_vpc(ec2: Any, vpc_id: str) -> dict[str, Any]:
         "subnets": [],
         "route_tables": [],
         "internet_gateways": [],
+        "peering_connections": [],
         "vpc": None,
     }
 
@@ -198,6 +200,9 @@ def teardown_vpc(ec2: Any, vpc_id: str) -> dict[str, Any]:
             InternetGatewayId=igw["InternetGatewayId"],
         )
         deleted["internet_gateways"].append(igw["InternetGatewayId"])
+
+    # Delete VPC peering connections (otherwise the VPC delete fails with DependencyViolation)
+    deleted["peering_connections"] = delete_peering_connections_for_vpc(ec2, vpc_id)
 
     # Delete VPC
     delete_with_retry(ec2.delete_vpc, "vpc", VpcId=vpc_id)
