@@ -39,17 +39,21 @@ sudo apt-get install -y \
 
 # ── 2. Load modules ──────────────────────────────────────────────────────────
 log "Loading NVIDIA kernel modules ..."
-sudo modprobe nvidia nvidia-uvm nvidia-modeset || true
+sudo modprobe nvidia nvidia-uvm nvidia-modeset 2>/dev/null || \
+    log "WARNING: modprobe nvidia failed — expected if running on non-GPU VM during baking"
 
 # ── 3. Verify version consistency ────────────────────────────────────────────
 KMOD_VER=$(cat /sys/module/nvidia/version 2>/dev/null || echo "")
 if [[ -z "$KMOD_VER" ]]; then
-    die "nvidia kernel module did not load — check 'dmesg | grep -i nvidia'"
+    log "nvidia kernel module not loaded (no GPU device) — skipping version pin, continuing AMI bake"
+    KMOD_MAJOR="${DRIVER_MAJOR}"
+else
+    log "Kernel module version: $KMOD_VER"
+    KMOD_MAJOR="${KMOD_VER%%.*}"
 fi
-log "Kernel module version: $KMOD_VER"
 
 # Ensure libnvidia-ml matches the loaded kernel module.
-KMOD_MAJOR="${KMOD_VER%%.*}"
+KMOD_MAJOR="${KMOD_MAJOR:-${DRIVER_MAJOR}}"
 log "Pinning nvidia-utils to major version $KMOD_MAJOR ..."
 sudo apt-get install -y --allow-downgrades \
     nvidia-utils-${KMOD_MAJOR}-server 2>/dev/null || \
