@@ -187,13 +187,20 @@ def main() -> int:
         key_file = create_key_pair(ec2, args.key_name)
 
         # zCompute returns RSA PKCS#1 keys; paramiko's CloudInitCheck requires
-        # OpenSSH format. Convert in-place with ssh-keygen.
+        # OpenSSH format. Convert in-place using Python cryptography library.
         try:
-            import subprocess as _sp
-            _sp.run(
-                ['ssh-keygen', '-p', '-m', 'OpenSSH', '-f', key_file, '-N', ''],
-                check=True, capture_output=True,
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.backends import default_backend
+            with open(key_file, "rb") as _f:
+                _pem = _f.read()
+            _key = serialization.load_pem_private_key(_pem, password=None, backend=default_backend())
+            _openssh = _key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.OpenSSH,
+                encryption_algorithm=serialization.NoEncryption(),
             )
+            with open(key_file, "wb") as _f:
+                _f.write(_openssh)
             print(f"[launch] key converted to OpenSSH format", file=sys.stderr)
         except Exception as _e:
             print(f"[launch] WARNING: key format conversion failed (non-fatal): {_e}", file=sys.stderr)
