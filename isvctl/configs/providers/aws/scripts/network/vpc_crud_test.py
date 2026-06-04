@@ -41,6 +41,7 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
 import boto3
 from botocore.exceptions import ClientError
 from common.errors import delete_with_retry, handle_aws_errors
+from common.vpc import settle_after_vpc_available
 
 
 def test_create_vpc(ec2: Any, cidr: str, name: str) -> dict[str, Any]:
@@ -216,6 +217,12 @@ def main() -> int:
 
         vpc_id = create_result["vpc_id"]
         result["network_id"] = vpc_id
+
+        # Let the async CoreDNS service VM settle right after creation - BEFORE any sub-test can
+        # fail - so every exit path (including the finally cleanup on exception) deletes the VPC
+        # only after provisioning finished and doesn't orphan the service VM.
+        ec2.get_waiter("vpc_available").wait(VpcIds=[vpc_id], WaiterConfig={"Delay": 2, "MaxAttempts": 30})
+        settle_after_vpc_available()
 
         # Test 2: Read VPC
         read_result = test_read_vpc(ec2, vpc_id)

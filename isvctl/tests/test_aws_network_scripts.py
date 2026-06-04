@@ -1169,3 +1169,177 @@ def test_sdn_audit_trail_logging_records_cleanup_failure() -> None:
     assert result["success"] is False
     assert result["tests"]["cleanup"]["passed"] is False
     assert "Failed to delete audit probe security group sg-audit" in result["tests"]["cleanup"]["error"]
+
+
+class FakePeeringEc2:
+    """Fake EC2 covering describe/delete of VPC peering connections."""
+
+    def __init__(self, connections: list[dict[str, Any]]) -> None:
+        """Seed the fake with the peering connections describe should return."""
+        self._connections = connections
+        self.deleted: list[str] = []
+
+    def describe_vpc_peering_connections(
+        self,
+        Filters: list[dict[str, Any]] | None = None,
+        VpcPeeringConnectionIds: list[str] | None = None,
+        **_kwargs: Any,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Answer by-ID lookups and requester/accepter-vpc-id filters (the unfiltered describe returns InternalFailure on zCompute)."""
+        if VpcPeeringConnectionIds:
+            pcid = VpcPeeringConnectionIds[0]
+            code = "deleted" if pcid in self.deleted else "active"
+            return {"VpcPeeringConnections": [{"VpcPeeringConnectionId": pcid, "Status": {"Code": code}}]}
+        if Filters:
+            name, values = Filters[0]["Name"], Filters[0]["Values"]
+            key = "RequesterVpcInfo" if name.startswith("requester") else "AccepterVpcInfo"
+            matched = [pc for pc in self._connections if pc.get(key, {}).get("VpcId") in values]
+            return {"VpcPeeringConnections": matched}
+        raise AssertionError("unfiltered describe_vpc_peering_connections returns InternalFailure on zCompute")
+
+    def delete_vpc_peering_connection(self, VpcPeeringConnectionId: str) -> dict[str, Any]:
+        """Record the deletion request."""
+        self.deleted.append(VpcPeeringConnectionId)
+        return {}
+
+
+def test_delete_peering_connections_for_vpc_targets_only_the_vpc() -> None:
+    """Active connections where the VPC is requester OR accepter are deleted; others are skipped."""
+    module = _load_network_script("teardown.py")
+    ec2 = FakePeeringEc2(
+        [
+            {
+                "VpcPeeringConnectionId": "pcx-requester",
+                "RequesterVpcInfo": {"VpcId": "vpc-target"},
+                "AccepterVpcInfo": {"VpcId": "vpc-other"},
+                "Status": {"Code": "active"},
+            },
+            {
+                "VpcPeeringConnectionId": "pcx-accepter",
+                "RequesterVpcInfo": {"VpcId": "vpc-z"},
+                "AccepterVpcInfo": {"VpcId": "vpc-target"},
+                "Status": {"Code": "active"},
+            },
+            {
+                "VpcPeeringConnectionId": "pcx-unrelated",
+                "RequesterVpcInfo": {"VpcId": "vpc-x"},
+                "AccepterVpcInfo": {"VpcId": "vpc-y"},
+                "Status": {"Code": "active"},
+            },
+            {
+                "VpcPeeringConnectionId": "pcx-already-gone",
+                "RequesterVpcInfo": {"VpcId": "vpc-target"},
+                "AccepterVpcInfo": {"VpcId": "vpc-w"},
+                "Status": {"Code": "deleted"},
+            },
+        ]
+    )
+
+    deleted = module.delete_peering_connections_for_vpc(ec2, "vpc-target")
+
+    assert set(deleted) == {"pcx-requester", "pcx-accepter"}
+    assert set(ec2.deleted) == {"pcx-requester", "pcx-accepter"}
+
+
+class _ScriptablePeeringEc2:
+    """Peering fake whose filter results, per-ID poll behaviour, and errors are configurable."""
+
+    def __init__(
+        self,
+        *,
+        filter_conns: list[dict[str, Any]] | None = None,
+        by_id: dict[str, Any] | None = None,
+        filter_error: Exception | None = None,
+    ) -> None:
+        self._filter_conns = filter_conns or []
+        self._by_id = by_id or {}  # pcid -> {"Code": "..."} | Exception
+        self._filter_error = filter_error
+        self.deleted: list[str] = []
+
+    def describe_vpc_peering_connections(
+        self, Filters: list[dict[str, Any]] | None = None, VpcPeeringConnectionIds: list[str] | None = None, **_: Any
+    ) -> dict[str, list[dict[str, Any]]]:
+        if VpcPeeringConnectionIds:
+            outcome = self._by_id.get(VpcPeeringConnectionIds[0], {"Code": "deleted"})
+            if isinstance(outcome, Exception):
+                raise outcome
+            return {"VpcPeeringConnections": [{"VpcPeeringConnectionId": VpcPeeringConnectionIds[0], "Status": outcome}]}
+        if Filters:
+            if self._filter_error is not None:
+                raise self._filter_error
+            name = Filters[0]["Name"]
+            key = "RequesterVpcInfo" if name.startswith("requester") else "AccepterVpcInfo"
+            vpc = Filters[0]["Values"][0]
+            return {"VpcPeeringConnections": [c for c in self._filter_conns if c.get(key, {}).get("VpcId") == vpc]}
+        raise AssertionError("unfiltered describe is not used")
+
+    def delete_vpc_peering_connection(self, VpcPeeringConnectionId: str) -> dict[str, Any]:
+        self.deleted.append(VpcPeeringConnectionId)
+        return {}
+
+
+def _peering_conn(pcid: str, status: str, *, requester: str = "vpc-target", accepter: str = "vpc-other") -> dict[str, Any]:
+    return {
+        "VpcPeeringConnectionId": pcid,
+        "RequesterVpcInfo": {"VpcId": requester},
+        "AccepterVpcInfo": {"VpcId": accepter},
+        "Status": {"Code": status},
+    }
+
+
+def test_delete_peering_connections_waits_for_already_deleting_without_redeleting() -> None:
+    """A connection already in 'deleting' is waited on (until gone) but not re-deleted."""
+    module = _load_network_script("teardown.py")
+    ec2 = _ScriptablePeeringEc2(
+        filter_conns=[_peering_conn("pcx-del", "deleting")],
+        by_id={"pcx-del": {"Code": "deleted"}},
+    )
+
+    deleted = module.delete_peering_connections_for_vpc(ec2, "vpc-target")
+
+    assert deleted == ["pcx-del"]  # waited on
+    assert ec2.deleted == []  # not re-requested for deletion
+
+
+def test_delete_peering_connections_warns_when_not_confirmed_deleted(caplog: pytest.LogCaptureFixture) -> None:
+    """If a connection isn't confirmed gone within the timeout, that is logged (not silent)."""
+    module = _load_network_script("teardown.py")
+    ec2 = _ScriptablePeeringEc2(
+        filter_conns=[_peering_conn("pcx-stuck", "active")],
+        by_id={"pcx-stuck": {"Code": "active"}},
+    )
+
+    with caplog.at_level("WARNING"):
+        deleted = module.delete_peering_connections_for_vpc(ec2, "vpc-target", wait_timeout=0)
+
+    assert deleted == ["pcx-stuck"]
+    assert "not confirmed deleted" in caplog.text
+
+
+def test_delete_peering_connections_poll_error_does_not_abort_other_connections() -> None:
+    """A transient poll error on one connection must not skip waiting on the others."""
+    module = _load_network_script("teardown.py")
+    ec2 = _ScriptablePeeringEc2(
+        filter_conns=[_peering_conn("pcx-1", "active"), _peering_conn("pcx-2", "active")],
+        by_id={
+            "pcx-1": _client_error("DescribeVpcPeeringConnections", "InternalFailure"),
+            "pcx-2": {"Code": "deleted"},
+        },
+    )
+
+    deleted = module.delete_peering_connections_for_vpc(ec2, "vpc-target")
+
+    # Both were requested for deletion; the poll error on pcx-1 did not abort pcx-2.
+    assert set(deleted) == {"pcx-1", "pcx-2"}
+    assert set(ec2.deleted) == {"pcx-1", "pcx-2"}
+
+
+def test_delete_peering_connections_discovery_failure_is_swallowed() -> None:
+    """A describe (discovery) failure is logged and swallowed - cleanup never raises."""
+    module = _load_network_script("teardown.py")
+    ec2 = _ScriptablePeeringEc2(filter_error=_client_error("DescribeVpcPeeringConnections", "InternalFailure"))
+
+    deleted = module.delete_peering_connections_for_vpc(ec2, "vpc-target")
+
+    assert deleted == []
+    assert ec2.deleted == []

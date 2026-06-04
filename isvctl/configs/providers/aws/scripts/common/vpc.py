@@ -17,11 +17,30 @@ Provides common VPC operations used across network test scripts:
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 from botocore.exceptions import ClientError
 
 from common.errors import delete_with_retry
+
+logger = logging.getLogger(__name__)
+
+# A VPC's CoreDNS service VM is provisioned asynchronously (nova + vm-manager) after the VPC
+# reports available. Tests that create and then quickly delete a VPC can race that provisioning
+# and orphan the service VM (or kill its boot volume mid-boot). Wait this long after a VPC is
+# available so the service VM is fully created before the caller proceeds to delete it.
+_SERVICE_VM_SETTLE_SECONDS = 30
+
+
+def settle_after_vpc_available() -> None:
+    """Wait for a VPC's async CoreDNS service VM (nova + vm-manager) to finish provisioning.
+
+    Every VPC-creation path should call this once the VPC is available, before the VPC can be
+    deleted - otherwise a fast create/delete races the provisioning and orphans the service VM.
+    """
+    time.sleep(_SERVICE_VM_SETTLE_SECONDS)
 
 
 def create_test_vpc(
@@ -63,6 +82,10 @@ def create_test_vpc(
             ec2.modify_vpc_attribute(VpcId=vpc_id, EnableDnsSupport={"Value": True})
             ec2.modify_vpc_attribute(VpcId=vpc_id, EnableDnsHostnames={"Value": True})
 
+        # Let the asynchronous CoreDNS service VM finish provisioning before the caller can
+        # delete this VPC, otherwise a fast create/delete races and orphans the service VM.
+        settle_after_vpc_available()
+
         result["passed"] = True
         result["cidr"] = cidr
         result["message"] = f"Created VPC {vpc_id}"
@@ -87,6 +110,91 @@ def delete_vpc(ec2: Any, vpc_id: str) -> None:
         VpcId=vpc_id,
         resource_desc=f"VPC {vpc_id}",
     )
+
+
+def delete_peering_connections_for_vpc(
+    ec2: Any,
+    vpc_id: str,
+    *,
+    wait_timeout: float = 60.0,
+    poll_seconds: float = 2.0,
+) -> list[str]:
+    """Delete every VPC peering connection ``vpc_id`` is part of, waiting until each is gone.
+
+    A peering connection blocks ``delete_vpc`` until it is fully removed, and the backend
+    tears it down asynchronously - so we request deletion and then poll until each
+    connection is actually gone before returning, otherwise the subsequent VPC delete races
+    the teardown and fails with ``DependencyViolation``.
+
+    Connections are discovered with the ``requester/accepter-vpc-info.vpc-id`` filters (the
+    unfiltered describe returns ``InternalFailure`` on zCompute). This is best-effort cleanup
+    invoked from ``finally`` blocks, so it never raises - a discovery/delete failure is logged
+    and the caller proceeds (the VPC delete still retries ``DependencyViolation``).
+
+    Args:
+        ec2: Boto3 EC2 client.
+        vpc_id: VPC whose peering connections should be removed.
+        wait_timeout: Max seconds to wait for all deletions to complete.
+        poll_seconds: Delay between status polls.
+
+    Returns:
+        The peering connection IDs that were waited on (delete requested, or already deleting).
+    """
+    waiting_on: list[str] = []
+    try:
+        # Discover every connection this VPC is part of that isn't already fully gone. A connection
+        # already in "deleting" still blocks delete_vpc, so we must wait for it too (not skip it).
+        statuses: dict[str, str] = {}
+        for role in ("requester-vpc-info.vpc-id", "accepter-vpc-info.vpc-id"):
+            response = ec2.describe_vpc_peering_connections(Filters=[{"Name": role, "Values": [vpc_id]}])
+            for pc in response.get("VpcPeeringConnections", []):
+                code = pc.get("Status", {}).get("Code")
+                if code != "deleted":
+                    statuses[pc["VpcPeeringConnectionId"]] = code
+
+        for pcid, code in statuses.items():
+            if code == "deleting":
+                waiting_on.append(pcid)  # already tearing down - just wait for it to finish
+            elif delete_with_retry(
+                ec2.delete_vpc_peering_connection,
+                VpcPeeringConnectionId=pcid,
+                resource_desc=f"VPC peering connection {pcid}",
+            ):
+                waiting_on.append(pcid)
+            else:
+                logger.warning("Could not request deletion of peering connection %s for VPC %s", pcid, vpc_id)
+
+        for pcid in waiting_on:
+            deadline = time.monotonic() + wait_timeout  # per-connection budget, not shared
+            confirmed_gone = False
+            while time.monotonic() < deadline:
+                try:
+                    conns = ec2.describe_vpc_peering_connections(VpcPeeringConnectionIds=[pcid]).get(
+                        "VpcPeeringConnections", []
+                    )
+                except ClientError as e:
+                    if e.response.get("Error", {}).get("Code") == "InvalidVpcPeeringConnectionID.NotFound":
+                        confirmed_gone = True
+                        break
+                    # A transient error polling THIS connection must not abort the others; log,
+                    # stop waiting on this one, and move on.
+                    logger.warning("Error polling peering connection %s for VPC %s: %s", pcid, vpc_id, e)
+                    break
+                if not conns or conns[0].get("Status", {}).get("Code") == "deleted":
+                    confirmed_gone = True
+                    break
+                time.sleep(poll_seconds)
+            if not confirmed_gone:
+                # Don't fail silently: the VPC delete that follows may hit DependencyViolation.
+                logger.warning(
+                    "Peering connection %s for VPC %s not confirmed deleted within %ss",
+                    pcid,
+                    vpc_id,
+                    wait_timeout,
+                )
+    except Exception:  # best-effort cleanup must never raise into a finally block
+        logger.warning("Best-effort peering-connection cleanup failed for VPC %s", vpc_id, exc_info=True)
+    return waiting_on
 
 
 def cleanup_vpc_resources(
