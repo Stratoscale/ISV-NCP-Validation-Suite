@@ -141,6 +141,25 @@ else
 fi
 
 sudo nvidia-ctk runtime configure --runtime=docker
+
+# Configure nvidia-container-runtime to use legacy mode (not CDI).
+# CDI mode ("auto") hangs on container creation in GPU VM environments.
+# Legacy mode directly injects /dev/nvidia* devices without CDI.
+sudo sed -i 's/mode = "auto"/mode = "legacy"/' /etc/nvidia-container-runtime/config.toml
+
+# Do NOT set nvidia as default-runtime — only GPU containers should use it.
+# daemon.json should only register nvidia as a named runtime, not default.
+sudo tee /etc/docker/daemon.json > /dev/null <<'DOCKEREOF'
+{
+    "runtimes": {
+        "nvidia": {
+            "args": [],
+            "path": "nvidia-container-runtime"
+        }
+    }
+}
+DOCKEREOF
+
 sudo systemctl restart docker
 log "NVIDIA Container Toolkit: $(nvidia-ctk --version 2>/dev/null | head -1)"
 
