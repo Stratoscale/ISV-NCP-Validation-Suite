@@ -169,7 +169,19 @@ DOCKEREOF
 sudo systemctl restart docker
 log "NVIDIA Container Toolkit: $(nvidia-ctk --version 2>/dev/null | head -1)"
 
-# ── 8. Re-pin nvidia-utils after all apt operations ──────────────────────────
+# ── 8. NVIDIA Fabric Manager (required for H100 NVSwitch cuInit) ─────────────
+# H100 SXM5 uses NVSwitch topology. Without fabric manager, cuInit(0) returns
+# CUDA_ERROR_SYSTEM_NOT_READY even for single-GPU workloads inside containers.
+# nvidia-smi / NVML works fine without it, so this is easy to miss.
+log "Installing NVIDIA Fabric Manager ..."
+sudo apt-get install -y nvidia-fabricmanager-${DRIVER_MAJOR} 2>/dev/null || \
+sudo apt-get install -y nvidia-fabricmanager-${DRIVER_MAJOR}-server 2>/dev/null || \
+    log "WARNING: nvidia-fabricmanager not found in apt — cuInit may fail on NVSwitch systems"
+sudo systemctl enable nvidia-fabricmanager 2>/dev/null || true
+# Do not start now (no GPU on bake VM); it will start at boot on a GPU VM.
+log "nvidia-fabricmanager installed and enabled (starts at boot on GPU VM)"
+
+# ── 10. Re-pin nvidia-utils after all apt operations ─────────────────────────
 log "Final nvidia-utils pin to kernel module version $KMOD_MAJOR ..."
 sudo apt-get install -y --allow-downgrades \
     nvidia-utils-${KMOD_MAJOR}-server 2>/dev/null || \
@@ -178,7 +190,7 @@ sudo apt-get install -y --allow-downgrades \
 sudo ldconfig
 sudo systemctl restart docker
 
-# ── 9. Verification ──────────────────────────────────────────────────────────
+# ── 11. Verification ─────────────────────────────────────────────────────────
 echo ""
 echo "============================================================"
 echo " VERIFICATION"

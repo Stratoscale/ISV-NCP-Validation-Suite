@@ -144,6 +144,20 @@ def main() -> int:
         else:
             print(f"nvidia-uvm loaded: {uvm_out.strip()}", file=sys.stderr)
 
+        # Ensure nvidia-fabricmanager is running — H100 SXM5 (NVSwitch topology) requires
+        # the fabric manager for cuInit(0) to succeed, even for single-GPU workloads.
+        # nvidia-smi / NVML works without it; the CUDA driver API does not.
+        print("Starting nvidia-fabricmanager (required for H100 NVSwitch cuInit)...", file=sys.stderr)
+        fm_code, fm_out, fm_err = run_cmd(
+            ssh,
+            "sudo systemctl is-active nvidia-fabricmanager 2>/dev/null || "
+            "sudo systemctl start nvidia-fabricmanager 2>&1 && "
+            "sudo systemctl is-active nvidia-fabricmanager 2>/dev/null || "
+            "echo 'not-available'",
+            timeout=30,
+        )
+        print(f"fabric-manager status: {fm_out.strip() or fm_err.strip()}", file=sys.stderr)
+
         # Clean up previous containers only (preserve cached images to avoid re-pulling)
         run_cmd(ssh, f"docker rm -f {args.container_name} 2>/dev/null || true")
         run_cmd(ssh, "docker container prune -f 2>/dev/null || true")
