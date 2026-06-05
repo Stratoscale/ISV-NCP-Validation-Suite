@@ -1,0 +1,123 @@
+# Quick VM test — skips stop/start/reboot (time-consuming, known passing).
+# Tests only: ContainerRuntimeCheck + NIM deployment.
+# Use this to verify docker GPU and NIM fixes without the full lifecycle.
+#
+# Usage:
+#   export ZCOMPUTE_BASE_URL=https://172.29.0.20
+#   export AWS_ACCESS_KEY_ID=...
+#   export AWS_SECRET_ACCESS_KEY=...
+#   export AWS_REGION=symphony
+#   export ZCOMPUTE_TEST_AMI_ID=<ami-id>
+#   export NGC_API_KEY=<key>
+#   uv run isvctl test run -f isvctl/configs/providers/zcompute/config/vm_quick.yaml -v
+
+import:
+  - ../../../suites/vm.yaml
+
+version: "1.0"
+
+commands:
+  vm:
+    phases: ["setup", "test", "teardown"]
+    steps:
+      - name: launch_instance
+        phase: setup
+        command: "python3 ../scripts/vm/launch_instance.py"
+        args:
+          - "--name"
+          - "isv-test-gpu-quick"
+          - "--instance-type"
+          - "{{instance_type}}"
+          - "--region"
+          - "{{region}}"
+          - "--ami-id"
+          - "{{ami_id}}"
+        timeout: 2700
+
+      - name: describe_instance
+        phase: test
+        command: "python3 ../scripts/vm/describe_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+        timeout: 120
+
+      - name: deploy_nim
+        phase: test
+        command: "python3 ../../shared/deploy_nim.py"
+        args:
+          - "--host"
+          - "{{steps.launch_instance.public_ip}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+        timeout: 1800
+
+      - name: teardown_nim
+        phase: teardown
+        command: "python3 ../../shared/teardown_nim.py"
+        args:
+          - "--host"
+          - "{{steps.launch_instance.public_ip}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+        timeout: 120
+
+      - name: teardown
+        phase: teardown
+        command: "python3 ../scripts/vm/teardown.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--eip-allocation-id"
+          - "{{steps.launch_instance.eip_allocation_id}}"
+          - "--delete-key-pair"
+          - "--delete-security-group"
+        timeout: 600
+
+tests:
+  cluster_name: "zcompute-vm-quick"
+  description: "Quick VM test: ContainerRuntimeCheck + NIM only"
+
+  settings:
+    region: "symphony"
+    instance_type: "zh1.52xlarge"
+    ami_id: "{{env.ZCOMPUTE_TEST_AMI_ID | default('ami-241c9a9e96d143dc90e1a5a50a3a8152')}}"
+    teardown_flag: ""
+
+  validations:
+    gpu:
+      step: describe_instance
+      checks:
+        GpuCheck:
+          expected_gpus: 8
+
+    host_os:
+      step: describe_instance
+      checks:
+        VcpuPinningCheck: {}
+        PciBusCheck:
+          expected_gpus: 8
+        HostSoftwareCheck: {}
+        ContainerRuntimeCheck: {}
+
+  exclude:
+    tests:
+      - SerialConsoleCheck
+      - ConsoleRbacCheck
+      - InstanceListCheck
+      - InstanceTagCheck
+      - InstanceStateCheck
+      - ConnectivityCheck
+      - OsCheck
+      - DriverCheck
+      - CpuInfoCheck
+      - InstanceStopCheck
+      - InstanceStartCheck
+      - InstanceRebootCheck
+      - StableIdentifierCheck
