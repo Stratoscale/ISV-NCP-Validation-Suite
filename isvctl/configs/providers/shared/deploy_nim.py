@@ -133,6 +133,17 @@ def main() -> int:
             print(json.dumps(result, indent=2))
             return 1
 
+        # Ensure nvidia-uvm module is loaded — required for cuInit(0) (CUDA runtime).
+        # nvidia-smi uses NVML (doesn't need UVM) so ContainerRuntimeCheck passes even
+        # when UVM is absent. NIM calls cuInit which fails with CUDA_ERROR_SYSTEM_NOT_READY
+        # if nvidia-uvm is not loaded on the host.
+        print("Loading nvidia-uvm kernel module...", file=sys.stderr)
+        uvm_code, uvm_out, uvm_err = run_cmd(ssh, "sudo modprobe nvidia-uvm && ls /dev/nvidia-uvm 2>&1")
+        if uvm_code != 0:
+            print(f"WARNING: modprobe nvidia-uvm failed: {uvm_err or uvm_out}", file=sys.stderr)
+        else:
+            print(f"nvidia-uvm loaded: {uvm_out.strip()}", file=sys.stderr)
+
         # Clean up previous containers only (preserve cached images to avoid re-pulling)
         run_cmd(ssh, f"docker rm -f {args.container_name} 2>/dev/null || true")
         run_cmd(ssh, "docker container prune -f 2>/dev/null || true")

@@ -70,7 +70,13 @@ else
 fi
 
 # ── 4. Persist modules across reboots ────────────────────────────────────────
-log "Persisting NVIDIA modules in /etc/modules ..."
+log "Persisting NVIDIA modules via modules-load.d ..."
+sudo tee /etc/modules-load.d/nvidia.conf > /dev/null <<'EOF'
+nvidia
+nvidia-uvm
+nvidia-modeset
+EOF
+# Also add to /etc/modules for older init systems
 sudo sh -c 'grep -q "^nvidia$" /etc/modules || printf "nvidia\nnvidia-uvm\nnvidia-modeset\n" >> /etc/modules'
 
 # Ensure nvidia-smi is in PATH for non-interactive SSH sessions.
