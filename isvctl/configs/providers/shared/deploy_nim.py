@@ -149,7 +149,7 @@ def main() -> int:
         # Launch NIM container
         print(f"Launching NIM container: {image}", file=sys.stderr)
         docker_cmd = (
-            f"docker run -d --gpus all"
+            f"docker run -d --gpus all --privileged --ipc=host"
             f" --name {args.container_name}"
             f" -p {args.port}:8000"
             f" -e NGC_API_KEY='{args.ngc_api_key}'"  # NIM container expects NGC_API_KEY
