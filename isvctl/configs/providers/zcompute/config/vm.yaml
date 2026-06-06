@@ -157,7 +157,7 @@ commands:
           - "{{steps.reboot_instance.public_ip}}"
           - "--key-file"
           - "{{steps.reboot_instance.key_file}}"
-        timeout: 1800
+        timeout: 2700
 
       - name: teardown_nim
         phase: teardown
