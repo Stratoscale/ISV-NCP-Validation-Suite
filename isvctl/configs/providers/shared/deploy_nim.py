@@ -87,7 +87,7 @@ def main() -> int:
     parser.add_argument(
         "--timeout",
         type=int,
-        default=600,
+        default=1200,
         help="Seconds to wait for NIM health endpoint",
     )
     args = parser.parse_args()
