@@ -144,40 +144,27 @@ def main() -> int:
         else:
             print(f"nvidia-uvm loaded: {uvm_out.strip()}", file=sys.stderr)
 
-        # Ensure nvidia-fabricmanager is running — H100 SXM5 (NVSwitch topology) requires
-        # the fabric manager for cuInit(0) to succeed, even for single-GPU workloads.
-        # nvidia-smi / NVML works without it; the CUDA driver API returns
-        # CUDA_ERROR_SYSTEM_NOT_READY (802) without it.
+        # Ensure nvidia-fabricmanager is running.
+        # H100 HBM3 requires it for cuInit(0) even in VMs with GPU passthrough and no
+        # visible NVSwitch. Without it, cuInit returns CUDA_ERROR_SYSTEM_NOT_READY (802)
+        # while nvidia-smi / NVML continue to work fine.
         print("Ensuring nvidia-fabricmanager is installed and running...", file=sys.stderr)
-        fm_check_code, fm_check_out, _ = run_cmd(
+        fm_code, fm_out, fm_err = run_cmd(
             ssh,
-            "sudo systemctl is-active nvidia-fabricmanager 2>/dev/null; echo exit=$?",
-            timeout=10,
+            # Install if not present (requires CUDA apt repo), then (re)start, then check.
+            "{ dpkg -l nvidia-fabricmanager-535 2>/dev/null | grep -q '^ii' || "
+            "  sudo apt-get install -y -q nvidia-fabricmanager-535 2>&1 ; } ; "
+            "sudo systemctl start nvidia-fabricmanager 2>&1 ; "
+            "sleep 2 ; sudo systemctl is-active nvidia-fabricmanager",
+            timeout=300,
         )
-        if "active" not in fm_check_out:
-            # Not running — try to install if missing, then start
-            print("fabric-manager not running; attempting install...", file=sys.stderr)
-            _, inst_out, inst_err = run_cmd(
-                ssh,
-                "dpkg -l nvidia-fabricmanager-535 2>/dev/null | grep -q '^ii' || "
-                "sudo apt-get install -y -q nvidia-fabricmanager-535 2>&1",
-                timeout=300,
+        fm_status = fm_out.strip().splitlines()[-1].strip() if fm_out.strip() else (fm_err.strip() or "unknown")
+        print(f"fabric-manager: {fm_status}", file=sys.stderr)
+        if fm_status != "active":
+            print(
+                "WARNING: nvidia-fabricmanager not active — cuInit may fail",
+                file=sys.stderr,
             )
-            print(f"install output: {(inst_out or inst_err).strip()[:200]}", file=sys.stderr)
-            fm_start_code, fm_start_out, fm_start_err = run_cmd(
-                ssh,
-                "sudo systemctl start nvidia-fabricmanager && sleep 3 && "
-                "sudo systemctl is-active nvidia-fabricmanager 2>&1",
-                timeout=30,
-            )
-            print(f"fabric-manager start: {(fm_start_out or fm_start_err).strip()}", file=sys.stderr)
-            if fm_start_code != 0:
-                print(
-                    "WARNING: nvidia-fabricmanager could not start — cuInit may fail on NVSwitch systems",
-                    file=sys.stderr,
-                )
-        else:
-            print(f"fabric-manager: {fm_check_out.strip()}", file=sys.stderr)
 
         # Clean up previous containers only (preserve cached images to avoid re-pulling)
         run_cmd(ssh, f"docker rm -f {args.container_name} 2>/dev/null || true")
