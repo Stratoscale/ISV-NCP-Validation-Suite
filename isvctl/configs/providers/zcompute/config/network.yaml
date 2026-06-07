@@ -108,7 +108,7 @@ commands:
           - "{{steps.create_network.security_group_id}}"
           - "--region"
           - "{{region}}"
-        timeout: 300
+        timeout: 600
         output_schema: dhcp_ip
 
       # Test 6: Stable Private IP (stop/start instance, verify IP unchanged)
