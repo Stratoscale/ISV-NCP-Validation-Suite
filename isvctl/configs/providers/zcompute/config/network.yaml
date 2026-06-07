@@ -149,11 +149,19 @@ commands:
         timeout: 120
         output_schema: localized_dns
 
-      # SG Scoping: workload only (subnet=NACLs not supported, service=VPC endpoints not supported)
+      # SG Scoping: workload + node (same ENI-level test, different label)
+      # subnet=NACLs not supported, service=VPC endpoints not supported
       - name: sg_workload_scoping
         phase: test
         command: "python3 ../scripts/network/ssl_wrapper.py ../../aws/scripts/network/sg_scoping_test.py"
         args: ["--region", "{{region}}", "--scope", "workload"]
+        timeout: 120
+        output_schema: generic
+
+      - name: sg_node_scoping
+        phase: test
+        command: "python3 ../scripts/network/ssl_wrapper.py ../../aws/scripts/network/sg_scoping_test.py"
+        args: ["--region", "{{region}}", "--scope", "node"]
         timeout: 120
         output_schema: generic
 
@@ -218,8 +226,7 @@ tests:
       - TrafficFlowCheck
       # DNS — under investigation for zCompute support
       # - LocalizedDnsCheck
-      # SG scoping — subnet/service not supported, node has no step
-      - SgNodeScopingCheck
+      # SG scoping — subnet/service not supported
       - SgSubnetScopingCheck   # CreateNetworkAcl returns AuthFailure — platform gap
       - SgServiceScopingCheck  # CreateVpcEndpoint returns AuthFailure — platform gap
       # SDN logging — CloudWatch/CloudTrail not in zCompute
