@@ -39,7 +39,7 @@ def symp_cmd(args: list[str], timeout: int = 30) -> list[Any]:
     container = os.environ.get("ZCOMPUTE_SYMP_CONTAINER", "symp_docker")
 
     cmd = [
-        "docker", "exec", container,
+        "sudo", "docker", "exec", container,
         "symp", "-q", "-k",
         "--username", user,
         "--domain", domain,
