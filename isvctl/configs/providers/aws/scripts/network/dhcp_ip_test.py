@@ -123,7 +123,7 @@ def launch_instance(
     }
 
 
-def wait_for_ssh(public_ip: str, timeout: int = 120) -> bool:
+def wait_for_ssh(public_ip: str, timeout: int = 300) -> bool:
     """Wait for SSH port to become reachable (simple TCP check)."""
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -184,7 +184,7 @@ def main() -> int:
 
         # Wait for SSH to become available
         if not wait_for_ssh(result["public_ip"]):
-            result["error"] = f"SSH not reachable on {result['public_ip']} after 120s"
+            result["error"] = f"SSH not reachable on {result['public_ip']} after 300s"
             print(json.dumps(result, indent=2))
             return 1
 

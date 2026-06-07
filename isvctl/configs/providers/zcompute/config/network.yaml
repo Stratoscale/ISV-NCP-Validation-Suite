@@ -165,6 +165,22 @@ commands:
         timeout: 180
         output_schema: vpc_peering
 
+      # Backend switch fabric — queries gpunet-pool for GPU leaf switch IDs
+      - name: backend_switch_fabric
+        phase: test
+        command: "python3 ../scripts/network/backend_switch_fabric_test.py"
+        args: ["--region", "{{region}}", "--node-id", "cn5"]
+        timeout: 60
+        output_schema: backend_switch_fabric
+
+      # NVLink domain — gpunet pool ID serves as GPU fabric domain identifier
+      - name: nvlink_domain
+        phase: test
+        command: "python3 ../scripts/network/nvlink_domain_test.py"
+        args: ["--region", "{{region}}", "--node-id", "cn5"]
+        timeout: 60
+        output_schema: nvlink_domain
+
       # Teardown: post-filters by VpcId (vpc-id filter ignored in zCompute)
       - name: teardown
         phase: teardown
@@ -212,6 +228,3 @@ tests:
       - SdnFilterAuditTrailCheck
       # Not supported in zCompute
       - ByoipCheck
-      # BackendSwitchFabricCheck and NvlinkDomainCheck — testing to determine support
-      # - BackendSwitchFabricCheck
-      # - NvlinkDomainCheck
