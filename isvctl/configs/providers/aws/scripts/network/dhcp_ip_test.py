@@ -185,6 +185,12 @@ def main() -> int:
         # Wait for SSH to become available
         if not wait_for_ssh(result["public_ip"]):
             result["error"] = f"SSH not reachable on {result['public_ip']} after 300s"
+            # Clean up the instance so teardown can delete the SG without it being "in use"
+            if result.get("instance_id"):
+                try:
+                    ec2.terminate_instances(InstanceIds=[result["instance_id"]])
+                except Exception:
+                    pass
             print(json.dumps(result, indent=2))
             return 1
 

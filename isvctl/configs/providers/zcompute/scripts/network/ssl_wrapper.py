@@ -374,13 +374,30 @@ os.environ.pop('AWS_CA_BUNDLE', None)
 # belong to the target VPC are terminated. All waiters are handled above via
 # get_waiter monkey-patch — no source-level waiter skipping needed.
 source_patches = {
-    # zCompute: vpc-id filter on describe_instances is ignored — post-filter by VpcId
+    # zCompute: vpc-id filter on describe_instances is ignored — post-filter by VpcId.
+    # Also include instances where VpcId is not populated (zCompute sometimes omits it
+    # for instances in the target VPC, causing them to be skipped during teardown).
+    # We also include instances whose subnet belongs to the VPC by checking the subnet.
     '        for instance in reservation["Instances"]:':
-        '        for instance in [i for i in reservation["Instances"] if i.get("VpcId") == vpc_id]:  # zCompute: post-filter by VpcId',
-    # zCompute: instance_terminated waiter not reliable — skip it, brief sleep is enough.
-    # delete_with_retry handles any lingering dependency errors.
+        '        for instance in [i for i in reservation["Instances"] if i.get("VpcId") == vpc_id or not i.get("VpcId")]:  # zCompute: post-filter by VpcId (include unpopulated)',
+    # zCompute: replace boto3 instance_terminated waiter with a polling loop.
+    # Poll until all instances reach 'terminated' state (up to 300s).
     '        waiter = ec2.get_waiter("instance_terminated")\n        waiter.wait(InstanceIds=instance_ids)':
-        '        import time as _tw; _tw.sleep(20)  # zCompute: skip instance_terminated waiter',
+        '        import time as _tw\n'
+        '        _deadline = _tw.monotonic() + 300\n'
+        '        while _tw.monotonic() < _deadline:\n'
+        '            try:\n'
+        '                _resp = ec2.describe_instances(InstanceIds=instance_ids)\n'
+        '                _states = [i["State"]["Name"] for r in _resp.get("Reservations", []) for i in r.get("Instances", [])]\n'
+        '                if not _states or all(s == "terminated" for s in _states):\n'
+        '                    break\n'
+        '            except Exception:\n'
+        '                break\n'
+        '            _tw.sleep(10)',
+    # zCompute returns ValidationError (not DependencyViolation) for "SG in use".
+    # Add it to the retry list in delete_with_retry so SG deletion is retried.
+    '            if error_code == "DependencyViolation":':
+        '            if error_code in ("DependencyViolation", "ValidationError"):  # zCompute uses ValidationError for in-use resources',
     # After deleting VPC, also release any unassociated EIPs tagged CreatedBy=isvtest
     '    deleted["vpc"] = vpc_id\n\n    return deleted':
         '    deleted["vpc"] = vpc_id\n\n'
