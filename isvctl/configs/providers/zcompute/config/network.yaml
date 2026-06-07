@@ -212,5 +212,6 @@ tests:
       - SdnFilterAuditTrailCheck
       # Not supported in zCompute
       - ByoipCheck
-      - BackendSwitchFabricCheck
-      - NvlinkDomainCheck
+      # BackendSwitchFabricCheck and NvlinkDomainCheck — testing to determine support
+      # - BackendSwitchFabricCheck
+      # - NvlinkDomainCheck
