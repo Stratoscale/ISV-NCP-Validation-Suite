@@ -1,19 +1,16 @@
 # zCompute Security Validation Configuration
 #
-# Only steps for RELEASED validations are included.
-# Unreleased validations are skipped by the framework automatically and their
-# steps are omitted here to keep the pipeline clean.
+# Only steps for RELEASED validations that are genuinely supported are included.
 #
-# Released checks (as of isvtest 0.6.8):
-#   SEC14-01: ApiEndpointIsolationCheck  — API not publicly accessible
-#   SEC07-01: MfaEnforcedCheck           — MFA enforced on admin interfaces
-#   SEC09-04: CustomerManagedKeyCheck    — BYOK/CMK encryption support
-#   SEC03-01: ServiceAccountCredentialCheck — service account IAM credentials
-#   SEC01-01: OidcUserAuthCheck          — OIDC token validation
+# Released checks that PASS:
+#   SEC14-01: ApiEndpointIsolationCheck        — API on private IP, requires auth
+#   SEC07-01: MfaEnforcedCheck                 — cluster-level MFA enforcement enabled
+#   SEC03-01: ServiceAccountCredentialCheck    — IAM service account credentials work
 #
-# Excluded (VM cloud — no BMC/IPMI/Redfish hardware management layer):
-#   BmcManagementNetworkCheck, BmcTenantIsolationCheck,
-#   BmcProtocolSecurityCheck, BmcBastionAccessCheck
+# Excluded — confirmed platform gaps (per Ofir Amir, Head of R&D):
+#   BMC checks (4)     — zCompute is a VM cloud, no BMC/IPMI/Redfish layer
+#   CustomerManagedKeyCheck — no KMS API; certificate management exists for LB only
+#   OidcUserAuthCheck  — only SAML via Okta supported, OIDC not implemented
 #
 # Usage:
 #   export ZCOMPUTE_BASE_URL=https://172.29.0.20
@@ -50,23 +47,11 @@ commands:
         args: ["--region", "{{region}}"]
         timeout: 60
 
-      - name: customer_managed_key_test
-        phase: test
-        command: "python3 ../scripts/security/customer_managed_key_test.py"
-        args: ["--region", "{{region}}"]
-        timeout: 60
-
       - name: sa_credential_test
         phase: test
         command: "python3 ../scripts/security/sa_credential_test.py"
         args: ["--region", "{{region}}"]
         timeout: 120
-
-      - name: oidc_user_auth_test
-        phase: test
-        command: "python3 ../scripts/security/oidc_user_auth_test.py"
-        args: ["--region", "{{region}}"]
-        timeout: 60
 
       - name: teardown
         phase: teardown
@@ -88,3 +73,7 @@ tests:
       - BmcTenantIsolationCheck
       - BmcProtocolSecurityCheck
       - BmcBastionAccessCheck
+      # KMS/BYOK API not available — certificate management exists for LB only (Ofir confirmed)
+      - CustomerManagedKeyCheck
+      # OIDC not implemented — only SAML via Okta supported (Ofir confirmed)
+      - OidcUserAuthCheck
