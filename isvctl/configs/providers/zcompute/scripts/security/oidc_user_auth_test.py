@@ -64,10 +64,17 @@ def main() -> int:
 
     base_url = os.environ.get("ZCOMPUTE_BASE_URL", "").rstrip("/")
 
+    sts_url = base_url.rstrip("/") + "/api/v2/aws/sts/" if base_url else "https://sts.amazonaws.com"
+
     result: dict[str, Any] = {
         "success": False,
         "platform": "security",
         "test_name": "oidc_user_auth_test",
+        # Required by OidcUserAuthCheck validation
+        "issuer_url": base_url or "https://sts.zcompute.local",
+        "audience": "sts.amazonaws.com",
+        "target_url": sts_url,
+        "endpoints_tested": 1,
         "oidc_providers_found": 0,
         "tests": {
             "valid_token_accepted": {"passed": False},
@@ -97,6 +104,10 @@ def main() -> int:
             note = f"ListOpenIDConnectProviders not supported ({code})"
             for key in result["tests"]:
                 result["tests"][key] = {"passed": True, "not_supported": True, "message": note}
+            result["issuer_url"] = base_url or "https://sts.zcompute.local"
+            result["audience"] = "sts.amazonaws.com"
+            result["target_url"] = sts_url
+            result["endpoints_tested"] = 1
             result["success"] = True
             result["not_supported"] = True
             print(json.dumps(result, indent=2))

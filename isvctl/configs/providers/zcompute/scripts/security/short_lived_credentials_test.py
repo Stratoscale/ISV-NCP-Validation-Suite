@@ -122,6 +122,12 @@ def main() -> int:
         print(json.dumps(result, indent=2))
         return 1
 
+    # Attach a policy — zCompute requires at least one policy before AssumeRole
+    try:
+        iam.attach_role_policy(RoleName=_ROLE_NAME, PolicyArn=_POLICY_ARN_READONLY)
+    except Exception:
+        pass  # best-effort; if policy doesn't exist, try without it
+
     # Give IAM a moment to propagate
     time.sleep(3)
 

@@ -99,10 +99,12 @@ def main() -> int:
     errors: list[str] = []
     now = datetime.now(tz=timezone.utc)
 
+    not_before_str = not_before.isoformat()
+    not_after_str = not_after.isoformat()
     result["tests"]["cert_valid"] = {
         "passed": True,
-        "not_before": not_before.isoformat(),
-        "not_after": not_after.isoformat(),
+        "not_before": not_before_str,
+        "not_after": not_after_str,
         "subject_cn": cn,
     }
     validity_days = (not_after - not_before).days
