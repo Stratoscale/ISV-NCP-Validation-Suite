@@ -64,18 +64,21 @@ commands:
         command: "python3 ../scripts/security/cert_rotation_test.py"
         args: ["--region", "{{region}}"]
         timeout: 60
+        continue_on_failure: true  # CertRotationCycleCheck is unreleased
 
       - name: kms_encryption_options_test
         phase: test
         command: "python3 ../scripts/security/kms_encryption_options_test.py"
         args: ["--region", "{{region}}"]
         timeout: 60
+        continue_on_failure: true  # KmsEncryptionOptionCheck is unreleased
 
       - name: centralized_kms_test
         phase: test
         command: "python3 ../scripts/security/centralized_kms_test.py"
         args: ["--region", "{{region}}"]
         timeout: 60
+        continue_on_failure: true  # CentralizedKmsCheck is unreleased
 
       - name: customer_managed_key_test
         phase: test
