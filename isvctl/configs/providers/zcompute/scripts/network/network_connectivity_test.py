@@ -819,12 +819,26 @@ def main() -> int:
             }
 
         # ── Step 4: Ping VMs via guestnet-admin-tool ───────────────────────────
-        # Wait 30s after VMs are running to allow DHCP to assign IPs and the
-        # network stack to initialize. Without this, arping from the DHCP server
-        # finds the VM's L2 address before the guest network stack is ready and
-        # the ping-vm job stays in "processing" indefinitely.
-        print("[net-conn] waiting 30s for VM network stack to initialize ...", file=sys.stderr)
-        time.sleep(30)
+        # Wait for SSH on both VMs before arpinging.
+        # SSH readiness is the most reliable indicator that:
+        #   1. The VM OS has fully booted
+        #   2. DHCP has completed and the VM has its IP
+        #   3. The DHCP server has registered the VM's MAC address
+        # Without this, ping-vm stays in "processing" because the DHCP server
+        # hasn't recorded the VM's MAC yet and cannot send the arping.
+        import socket as _socket
+        for _label, _ip in [("VM1", vm1["public_ip"]), ("VM2", vm2["public_ip"])]:
+            if not _ip:
+                continue
+            print(f"[net-conn] waiting for SSH on {_label} ({_ip}) ...", file=sys.stderr)
+            _ssh_deadline = time.monotonic() + 300
+            while time.monotonic() < _ssh_deadline:
+                try:
+                    with _socket.create_connection((_ip, 22), timeout=5):
+                        print(f"[net-conn] SSH ready on {_label}", file=sys.stderr)
+                        break
+                except OSError:
+                    time.sleep(10)
 
         # Each ping is executed independently; one failure does not skip the other.
         if vm1_uuid:

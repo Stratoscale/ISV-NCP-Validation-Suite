@@ -1004,11 +1004,21 @@ def main() -> int:
         # ── Step 4: Run sub-tests ─────────────────────────────────────────────
         # Each sub-test is wrapped individually so one failure does not abort others.
 
-        # Wait for VM-A network stack to initialize before arping.
-        # Without this settle delay, the DHCP server issues the arping before
-        # the guest has completed DHCP negotiation and the job stays in "processing".
-        print("[net-flow] waiting 30s for VM-A network stack to initialize ...", file=sys.stderr)
-        time.sleep(30)
+        # Wait for SSH on VM-A before arpinging — SSH up means DHCP is done
+        # and the DHCP server has the VM's MAC registered. Without this the
+        # ping-vm job stays in "processing" indefinitely.
+        # (We already wait for SSH before internet_icmp/http; do it earlier here
+        #  so traffic_allowed also benefits from the DHCP readiness guarantee.)
+        import socket as _socket_flow
+        print(f"[net-flow] waiting for SSH on VM-A ({vm_a['public_ip']}) before arping ...", file=sys.stderr)
+        _ssh_deadline = time.monotonic() + 300
+        while time.monotonic() < _ssh_deadline:
+            try:
+                with _socket_flow.create_connection((vm_a["public_ip"], 22), timeout=5):
+                    print("[net-flow] SSH ready on VM-A — DHCP confirmed", file=sys.stderr)
+                    break
+            except OSError:
+                time.sleep(10)
 
         # -- traffic_allowed --------------------------------------------------
         print("[net-flow] running traffic_allowed test ...", file=sys.stderr)
@@ -1027,24 +1037,8 @@ def main() -> int:
             result["tests"]["traffic_blocked"] = {"passed": False, "error": str(exc)}
 
         # -- internet_icmp / internet_http ------------------------------------
-        # Both tests SSH into VM-A. Wait up to 180s for SSH to become available
-        # before attempting (VM boots asynchronously after EIP association).
-        print("[net-flow] waiting for SSH on VM-A ...", file=sys.stderr)
-        import socket as _socket
+        # SSH is already confirmed ready from the wait above (before traffic_allowed).
         vm_a_key_file = f"/tmp/{vm_a['key_name']}.pem"
-        _ssh_deadline = time.monotonic() + 180
-        _ssh_ready = False
-        while time.monotonic() < _ssh_deadline:
-            try:
-                with _socket.create_connection((vm_a["public_ip"], 22), timeout=5):
-                    _ssh_ready = True
-                    break
-            except OSError:
-                time.sleep(10)
-        if _ssh_ready:
-            print(f"[net-flow] SSH ready on {vm_a['public_ip']}", file=sys.stderr)
-        else:
-            print(f"[net-flow] SSH not ready after 180s — internet tests may fail", file=sys.stderr)
 
         # -- internet_icmp ----------------------------------------------------
         # SSH into VM-A and ping 8.8.8.8 — VM has EIP + IGW so real internet access.
