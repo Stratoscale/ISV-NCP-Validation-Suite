@@ -109,9 +109,17 @@ def _poll_image_ready(
 
 
 def op_get(ec2: Any, image_id: str) -> dict[str, Any]:
-    """Get a specific image by EC2 AMI ID."""
-    resp = ec2.describe_images(ImageIds=[image_id])
-    images = resp.get("Images", [])
+    """Get a specific image by EC2 AMI ID.
+
+    zCompute ignores the ImageIds filter on describe_images — fetch all
+    images owned by self and filter in Python instead.
+    """
+    resp = ec2.describe_images(Owners=["self"])
+    images = [img for img in resp.get("Images", []) if img.get("ImageId") == image_id]
+    if not images:
+        # Also try without owner filter (some zCompute versions need this)
+        resp2 = ec2.describe_images()
+        images = [img for img in resp2.get("Images", []) if img.get("ImageId") == image_id]
     if not images:
         return {"passed": False, "error": f"Image {image_id} not found"}
     img = images[0]
@@ -171,16 +179,30 @@ def op_create(run_tag: str) -> dict[str, Any]:
     return {"passed": True, "new_image_id": new_ami_id, "new_image_uuid": new_uuid}
 
 
-def op_delete(ec2: Any, new_image_id: str) -> dict[str, Any]:
-    """Deregister the image that was created in op_create."""
+def op_delete(ec2: Any, new_image_id: str, new_image_uuid: str = "") -> dict[str, Any]:
+    """Delete the image that was created in op_create.
+
+    zCompute's EC2 deregister_image returns NotFoundException for symp-created
+    images. Use symp machine-images delete as the primary method, with
+    EC2 deregister_image as fallback.
+    """
+    # Primary: symp delete (works for all machine images in zCompute)
+    if new_image_uuid:
+        try:
+            symp_cmd(["machine-images", "delete", new_image_uuid], timeout=30)
+            print(f"[crud] delete: deleted {new_image_uuid} via symp", file=sys.stderr)
+            return {"passed": True}
+        except Exception as e:
+            print(f"[crud] delete: symp delete failed ({e}), trying EC2...", file=sys.stderr)
+
+    # Fallback: EC2 deregister_image
     try:
         ec2.deregister_image(ImageId=new_image_id)
-        print(f"[crud] delete: deregistered {new_image_id}", file=sys.stderr)
+        print(f"[crud] delete: deregistered {new_image_id} via EC2", file=sys.stderr)
         return {"passed": True}
     except ClientError as e:
         code = e.response.get("Error", {}).get("Code", "")
-        # InvalidAMIID.NotFound is acceptable — image may already be gone
-        if code in ("InvalidAMIID.NotFound", "InvalidAMIID.Unavailable"):
+        if code in ("InvalidAMIID.NotFound", "InvalidAMIID.Unavailable", "NotFoundException"):
             print(f"[crud] delete: {new_image_id} already gone ({code})", file=sys.stderr)
             return {"passed": True}
         return {"passed": False, "error": str(e)}
@@ -208,6 +230,7 @@ def main() -> int:
     run_tag = uuid.uuid4().hex[:8]
     ops: dict[str, Any] = {}
     new_image_id: str | None = None
+    new_image_uuid: str = ""
 
     try:
         # ── 1. get ────────────────────────────────────────────────────────────
@@ -228,13 +251,14 @@ def main() -> int:
             ops["create"] = create_result
             if create_result.get("passed"):
                 new_image_id = create_result.get("new_image_id")
+                new_image_uuid = create_result.get("new_image_uuid", "")
         except Exception as e:
             ops["create"] = {"passed": False, "error": str(e)}
 
         # ── 4. delete ─────────────────────────────────────────────────────────
         if new_image_id:
             try:
-                ops["delete"] = op_delete(ec2, new_image_id)
+                ops["delete"] = op_delete(ec2, new_image_id, new_image_uuid)
             except Exception as e:
                 ops["delete"] = {"passed": False, "error": str(e)}
         else:
