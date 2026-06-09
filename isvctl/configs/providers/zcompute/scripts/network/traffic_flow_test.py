@@ -45,7 +45,7 @@ zCompute quirks handled:
   - guestnet-admin-tool ping-vm needs internal zCompute UUID (not i-xxx).
   - guestnet-admin-tool ping-ip needs the internal network UUID for the
     source network (not the VPC ID from EC2 API).
-    Use 'symp dvs network list -f json' → match by vpc_id field.
+    Use 'symp vpc network list -f json' → match by vpc_id field.
   - TagSpecifications not supported in CreateSecurityGroup — create then tag.
   - run_instances may return empty Instances[] — fall back to poll by name.
 
@@ -118,7 +118,7 @@ _VPC_B_SUBNET = "10.84.1.0/24"
 _MANAGEMENT_IP = "172.29.0.20"
 
 # guestnet-admin-tool polling parameters
-_PING_POLL_TIMEOUT = 30
+_PING_POLL_TIMEOUT = 90
 _PING_POLL_INTERVAL = 3
 
 # VM launch timeout
@@ -490,32 +490,54 @@ def _get_vm_uuid(vm_name: str) -> str | None:
     return None
 
 
+def _ec2_vpc_id_to_uuid(ec2_vpc_id: str) -> str:
+    """Convert an EC2 VPC ID to an internal zCompute UUID.
+
+    In zCompute the EC2 VPC ID (e.g. vpc-1b21d46e914c4817b995c98418e8de53)
+    is the standard UUID without hyphens, prefixed with "vpc-". The internal
+    symp objects use the standard hyphenated UUID form.
+
+    Example:
+      vpc-1b21d46e914c4817b995c98418e8de53
+        → 1b21d46e-914c-4817-b995-c98418e8de53
+    """
+    hex_str = ec2_vpc_id.removeprefix("vpc-")
+    # Insert hyphens at the standard UUID positions: 8-4-4-4-12
+    return f"{hex_str[0:8]}-{hex_str[8:12]}-{hex_str[12:16]}-{hex_str[16:20]}-{hex_str[20:]}"
+
+
 def _get_network_uuid(vpc_id: str) -> str | None:
     """Translate an EC2 VPC ID to the internal zCompute network UUID.
 
     guestnet-admin-tool ping-ip requires the internal network UUID as the
     source network context, not the EC2 VPC ID. We get it from:
-      'symp dvs network list -f json'
-    which returns objects with 'id' (UUID) and 'vpc_id' fields.
+      'symp vpc network list -f json'
+    which returns objects with 'id' (network UUID) and 'vpc_id' (internal
+    VPC UUID) fields.
 
-    The 'vpc_id' field in symp output corresponds to the EC2 VpcId.
+    The EC2 VPC ID (vpc-xxx) is the internal UUID without hyphens, so we
+    convert it first before comparing against the symp output.
 
     Args:
-        vpc_id: EC2 VPC ID (vpc-xxx).
+        vpc_id: EC2 VPC ID (vpc-xxx format).
 
     Returns:
         Internal network UUID string, or None if not found.
     """
     try:
-        networks = _symp_cmd(["dvs", "network", "list"], timeout=30)
+        # Convert "vpc-1b21d46e914c4817..." → "1b21d46e-914c-4817-..."
+        internal_vpc_uuid = _ec2_vpc_id_to_uuid(vpc_id)
+        print(f"[net-flow] looking for network with vpc_id={internal_vpc_uuid} ...", file=sys.stderr)
+
+        networks = _symp_cmd(["vpc", "network", "list"], timeout=30)
         for net in networks:
-            # zCompute may expose the vpc_id under different key names
-            # depending on the symp version. Try common variants.
-            if net.get("vpc_id") == vpc_id or net.get("external_id") == vpc_id:
+            if net.get("vpc_id") == internal_vpc_uuid:
+                print(f"[net-flow] found network UUID: {net.get('id')}", file=sys.stderr)
                 return net.get("id")
-        print(f"[net-flow] WARNING: network for vpc_id={vpc_id} not found in symp dvs network list", file=sys.stderr)
+
+        print(f"[net-flow] WARNING: network for vpc_id={internal_vpc_uuid} not found in symp vpc network list", file=sys.stderr)
     except Exception as exc:
-        print(f"[net-flow] WARNING: symp dvs network list failed: {exc}", file=sys.stderr)
+        print(f"[net-flow] WARNING: _get_network_uuid failed: {exc}", file=sys.stderr)
     return None
 
 
@@ -597,7 +619,7 @@ def _ping_ip(network_uuid: str, dest_ip: str, command_type: str = "arping") -> d
       ping   — ICMP L3 ping; reaches any routable IP.
 
     Args:
-        network_uuid: Internal zCompute network UUID (from 'symp dvs network list').
+        network_uuid: Internal zCompute network UUID (from 'symp vpc network list').
         dest_ip:      Destination IP to probe.
         command_type: 'arping' or 'ping'.
 
@@ -981,6 +1003,12 @@ def main() -> int:
 
         # ── Step 4: Run sub-tests ─────────────────────────────────────────────
         # Each sub-test is wrapped individually so one failure does not abort others.
+
+        # Wait for VM-A network stack to initialize before arping.
+        # Without this settle delay, the DHCP server issues the arping before
+        # the guest has completed DHCP negotiation and the job stays in "processing".
+        print("[net-flow] waiting 30s for VM-A network stack to initialize ...", file=sys.stderr)
+        time.sleep(30)
 
         # -- traffic_allowed --------------------------------------------------
         print("[net-flow] running traffic_allowed test ...", file=sys.stderr)

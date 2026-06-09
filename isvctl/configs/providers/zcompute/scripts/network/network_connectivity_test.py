@@ -96,7 +96,7 @@ _SUBNET_CIDR = "10.83.1.0/24"
 _VM_LAUNCH_TIMEOUT = 600
 
 # How long to poll guestnet-admin-tool for a ping result (seconds).
-_PING_POLL_TIMEOUT = 30
+_PING_POLL_TIMEOUT = 90
 _PING_POLL_INTERVAL = 3
 
 
@@ -819,6 +819,13 @@ def main() -> int:
             }
 
         # ── Step 4: Ping VMs via guestnet-admin-tool ───────────────────────────
+        # Wait 30s after VMs are running to allow DHCP to assign IPs and the
+        # network stack to initialize. Without this, arping from the DHCP server
+        # finds the VM's L2 address before the guest network stack is ready and
+        # the ping-vm job stays in "processing" indefinitely.
+        print("[net-conn] waiting 30s for VM network stack to initialize ...", file=sys.stderr)
+        time.sleep(30)
+
         # Each ping is executed independently; one failure does not skip the other.
         if vm1_uuid:
             print(f"[net-conn] pinging VM1 (uuid={vm1_uuid}) ...", file=sys.stderr)
