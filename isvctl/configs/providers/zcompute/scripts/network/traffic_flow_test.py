@@ -691,73 +691,84 @@ def _test_traffic_allowed(vm_a_uuid: str | None) -> dict[str, Any]:
     }
 
 
-def _test_traffic_blocked(vpc_a_uuid: str | None, vm_b_private_ip: str | None) -> dict[str, Any]:
-    """traffic_blocked: arping from VPC-A context to VM-B's IP in VPC-B.
+def _test_traffic_allowed(vm_a_public_ip: str, key_file: str, vm_a_private_gw: str = "") -> dict[str, Any]:
+    """traffic_allowed: SSH into VM-A and ping its default gateway.
 
-    VM-B lives in VPC-B — a separate, non-peered VPC. arping is L2-only; it
-    cannot cross L2 segment boundaries. If the platform is correctly isolating
-    VPCs, this arping should fail or time out.
+    guestnet-admin-tool ping-vm only works for management-network VMs, not
+    for tenant VPC VMs created via the EC2 API. We SSH in and ping the VPC
+    gateway IP (first usable IP in the subnet, e.g. 10.85.1.1), which proves:
+      - The VM is alive and reachable via SSH
+      - The L3 default gateway is reachable (L3 connectivity within the VPC)
 
-    PASS condition: status == 'failed' OR 'Received 0' in output.
-    The test PASSES when the arping FAILS — we are verifying isolation.
-
-    Args:
-        vpc_a_uuid:      Internal network UUID for VPC-A (probe source context).
-        vm_b_private_ip: Private IP of VM-B (the target that should NOT respond).
+    PASS condition: ping exits 0 (gateway responds).
     """
-    if not vpc_a_uuid:
-        return {"passed": False, "error": "zCompute network UUID for VPC-A not resolved"}
+    # Derive the gateway IP from the VM's private IP subnet (.1 address)
+    # e.g. 10.85.1.45 → 10.85.1.1
+    import paramiko as _pm
+    gw_ip = vm_a_private_gw or "10.85.1.1"
+
+    print(f"[net-flow] traffic_allowed: SSH into VM-A → ping gateway {gw_ip}", file=sys.stderr)
+    try:
+        _client = _pm.SSHClient()
+        _client.set_missing_host_key_policy(_pm.AutoAddPolicy())
+        _client.connect(vm_a_public_ip, username="ubuntu", key_filename=key_file,
+                        timeout=30, allow_agent=False, look_for_keys=False)
+        _, _out, _ = _client.exec_command(f"ping -c 3 -W 3 {gw_ip}", timeout=20)
+        _exit = _out.channel.recv_exit_status()
+        _output = _out.read().decode().strip()
+        _client.close()
+        _passed = _exit == 0
+        return {
+            "passed": _passed,
+            "target": gw_ip,
+            "output": _output,
+            "message": f"ping gateway {gw_ip}: {'OK' if _passed else 'FAILED'}",
+        }
+    except Exception as exc:
+        return {"passed": False, "error": str(exc)}
+
+
+def _test_traffic_blocked(vm_a_public_ip: str, key_file: str, vm_b_private_ip: str | None) -> dict[str, Any]:
+    """traffic_blocked: SSH into VM-A and try to ping VM-B's private IP.
+
+    VM-B lives in VPC-B — a separate, non-peered VPC. Without a route between
+    the VPCs, the ping from VM-A to VM-B's private IP should fail with
+    "Network is unreachable" or time out. This confirms L3 isolation.
+
+    PASS condition: ping exits non-zero (no route or no response).
+    The test PASSES when the ping FAILS — we are verifying isolation.
+    """
     if not vm_b_private_ip:
         return {"passed": False, "error": "Private IP of VM-B not available"}
 
-    result = _ping_ip(vpc_a_uuid, vm_b_private_ip, command_type="arping")
-    output = result.get("output", "")
-    status = result.get("status", "unknown")
-
-    # If the arping reached the management plane but got no L2 response from
-    # VM-B's IP, that is the expected isolation behaviour. Both 'failed' status
-    # and 'Received 0' in output count as "traffic correctly blocked".
-    isolation_confirmed = (
-        status == "failed"
-        or "Received 0" in output
-        or result.get("status") == "timeout"
-    )
-
-    return {
-        "passed": isolation_confirmed,
-        "status": status,
-        "output": output,
-        "note": (
-            "arping from VPC-A to VPC-B returned no response — VPC isolation confirmed"
-            if isolation_confirmed
-            else f"Unexpected: arping to cross-VPC IP succeeded (status={status})"
-        ),
-        **({"error": result["error"]} if result.get("error") and not isolation_confirmed else {}),
-    }
-
-
-def _ssh_run(public_ip: str, key_file: str, command: str, timeout: int = 30) -> tuple[int, str, str]:
-    """Run a command on a remote VM via SSH and return (exit_code, stdout, stderr).
-
-    Uses paramiko with the key file generated during VM launch. SSH host key
-    checking is disabled because VMs are ephemeral and we don't track host keys.
-    """
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(
-        hostname=public_ip,
-        username="ubuntu",
-        key_filename=key_file,
-        timeout=30,
-        allow_agent=False,
-        look_for_keys=False,
-    )
+    import paramiko as _pm
+    print(f"[net-flow] traffic_blocked: SSH into VM-A → ping VM-B {vm_b_private_ip} (should fail)", file=sys.stderr)
     try:
-        _, stdout, stderr = client.exec_command(command, timeout=timeout)
-        exit_code = stdout.channel.recv_exit_status()
-        return exit_code, stdout.read().decode(), stderr.read().decode()
-    finally:
-        client.close()
+        _client = _pm.SSHClient()
+        _client.set_missing_host_key_policy(_pm.AutoAddPolicy())
+        _client.connect(vm_a_public_ip, username="ubuntu", key_filename=key_file,
+                        timeout=30, allow_agent=False, look_for_keys=False)
+        # -c 2 -W 2: 2 packets, 2s wait each — fail fast
+        _, _out, _ = _client.exec_command(f"ping -c 2 -W 2 {vm_b_private_ip}", timeout=15)
+        _exit = _out.channel.recv_exit_status()
+        _output = _out.read().decode().strip()
+        _client.close()
+        # Non-zero exit means ping failed = traffic correctly blocked
+        isolation_confirmed = _exit != 0
+        return {
+            "passed": isolation_confirmed,
+            "target": vm_b_private_ip,
+            "ping_exit_code": _exit,
+            "output": _output,
+            "message": (
+                f"ping VM-B ({vm_b_private_ip}) failed (exit {_exit}) — VPC isolation confirmed"
+                if isolation_confirmed
+                else f"ping VM-B ({vm_b_private_ip}) SUCCEEDED — isolation NOT confirmed"
+            ),
+        }
+    except Exception as exc:
+        return {"passed": False, "error": str(exc)}
+
 
 
 def _test_internet_icmp(public_ip: str, key_file: str) -> dict[str, Any]:
@@ -996,49 +1007,47 @@ def main() -> int:
         resources["instance_ids"].append(vm_b["instance_id"])
         resources["eip_allocation_ids"].append(vm_b["eip_allocation_id"])
 
-        # ── Step 3: Resolve internal zCompute identifiers ─────────────────────
-        # ping-vm needs VM-A's internal UUID; ping-ip needs VPC-A's network UUID.
-        vm_a_uuid = _get_vm_uuid(f"isv-net-flow-vma-{_RUN_TAG}")
-        vpc_a_net_uuid = _get_network_uuid(net_a["vpc_id"])
-
-        # ── Step 4: Run sub-tests ─────────────────────────────────────────────
-        # Each sub-test is wrapped individually so one failure does not abort others.
-
-        # Wait for SSH on VM-A before arpinging — SSH up means DHCP is done
-        # and the DHCP server has the VM's MAC registered. Without this the
-        # ping-vm job stays in "processing" indefinitely.
-        # (We already wait for SSH before internet_icmp/http; do it earlier here
-        #  so traffic_allowed also benefits from the DHCP readiness guarantee.)
+        # ── Step 3: Wait for SSH on VM-A ─────────────────────────────────────
+        # SSH readiness confirms DHCP is complete and the VM's network stack
+        # is fully initialized. All sub-tests require SSH into VM-A.
         import socket as _socket_flow
-        print(f"[net-flow] waiting for SSH on VM-A ({vm_a['public_ip']}) before arping ...", file=sys.stderr)
+        vm_a_key_file = f"/tmp/{vm_a['key_name']}.pem"
+        print(f"[net-flow] waiting for SSH on VM-A ({vm_a['public_ip']}) ...", file=sys.stderr)
         _ssh_deadline = time.monotonic() + 300
         while time.monotonic() < _ssh_deadline:
             try:
                 with _socket_flow.create_connection((vm_a["public_ip"], 22), timeout=5):
-                    print("[net-flow] SSH ready on VM-A — DHCP confirmed", file=sys.stderr)
+                    print("[net-flow] SSH ready on VM-A", file=sys.stderr)
                     break
             except OSError:
                 time.sleep(10)
 
+        # Derive VM-A's gateway IP from the subnet (first usable IP, e.g. 10.85.1.1)
+        vm_a_gw = vm_a["private_ip"].rsplit(".", 1)[0] + ".1"
+
+        # ── Step 4: Run sub-tests ─────────────────────────────────────────────
+        # Each sub-test is wrapped individually so one failure does not abort others.
+
         # -- traffic_allowed --------------------------------------------------
-        print("[net-flow] running traffic_allowed test ...", file=sys.stderr)
+        # SSH into VM-A, ping the VPC gateway — confirms internal L3 connectivity.
+        print("[net-flow] running traffic_allowed test (SSH → ping gateway) ...", file=sys.stderr)
         try:
-            result["tests"]["traffic_allowed"] = _test_traffic_allowed(vm_a_uuid)
+            result["tests"]["traffic_allowed"] = _test_traffic_allowed(
+                vm_a["public_ip"], vm_a_key_file, vm_a_gw
+            )
         except Exception as exc:
             result["tests"]["traffic_allowed"] = {"passed": False, "error": str(exc)}
 
         # -- traffic_blocked --------------------------------------------------
-        print("[net-flow] running traffic_blocked test ...", file=sys.stderr)
+        # SSH into VM-A, try to ping VM-B's private IP (in different VPC).
+        # Should fail — confirms L3 isolation between VPCs.
+        print("[net-flow] running traffic_blocked test (SSH → ping cross-VPC IP) ...", file=sys.stderr)
         try:
             result["tests"]["traffic_blocked"] = _test_traffic_blocked(
-                vpc_a_net_uuid, vm_b["private_ip"]
+                vm_a["public_ip"], vm_a_key_file, vm_b["private_ip"]
             )
         except Exception as exc:
             result["tests"]["traffic_blocked"] = {"passed": False, "error": str(exc)}
-
-        # -- internet_icmp / internet_http ------------------------------------
-        # SSH is already confirmed ready from the wait above (before traffic_allowed).
-        vm_a_key_file = f"/tmp/{vm_a['key_name']}.pem"
 
         # -- internet_icmp ----------------------------------------------------
         # SSH into VM-A and ping 8.8.8.8 — VM has EIP + IGW so real internet access.

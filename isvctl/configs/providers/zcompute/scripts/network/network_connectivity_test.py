@@ -818,50 +818,53 @@ def main() -> int:
                 "error": "Could not resolve zCompute UUID for VM2",
             }
 
-        # ── Step 4: Ping VMs via guestnet-admin-tool ───────────────────────────
-        # Wait for SSH on both VMs before arpinging.
-        # SSH readiness is the most reliable indicator that:
-        #   1. The VM OS has fully booted
-        #   2. DHCP has completed and the VM has its IP
-        #   3. The DHCP server has registered the VM's MAC address
-        # Without this, ping-vm stays in "processing" because the DHCP server
-        # hasn't recorded the VM's MAC yet and cannot send the arping.
+        # ── Step 4: Test connectivity via SSH + in-guest ping ────────────────
+        # SSH into each VM and verify L3 connectivity between them.
+        # guestnet-admin-tool ping-vm only works for management-network VMs,
+        # not for tenant VPC VMs created via the EC2 API. In-guest ping is the
+        # correct approach and mirrors exactly what NVIDIA's SSM-based test does:
+        # run a connectivity probe from inside the instance.
+        key_file = f"/tmp/{vm1['key_name']}.pem"
         import socket as _socket
-        for _label, _ip in [("VM1", vm1["public_ip"]), ("VM2", vm2["public_ip"])]:
-            if not _ip:
-                continue
-            print(f"[net-conn] waiting for SSH on {_label} ({_ip}) ...", file=sys.stderr)
-            _ssh_deadline = time.monotonic() + 300
-            while time.monotonic() < _ssh_deadline:
+        import paramiko as _paramiko
+
+        def _wait_ssh_and_ping(label: str, src_ip: str, dst_ip: str) -> dict:
+            """Wait for SSH on src, then ping dst from inside src."""
+            # Wait for SSH (max 300s)
+            _deadline = time.monotonic() + 300
+            while time.monotonic() < _deadline:
                 try:
-                    with _socket.create_connection((_ip, 22), timeout=5):
-                        print(f"[net-conn] SSH ready on {_label}", file=sys.stderr)
+                    with _socket.create_connection((src_ip, 22), timeout=5):
+                        print(f"[net-conn] SSH ready on {label} ({src_ip})", file=sys.stderr)
                         break
                 except OSError:
                     time.sleep(10)
 
-        # Each ping is executed independently; one failure does not skip the other.
-        if vm1_uuid:
-            print(f"[net-conn] pinging VM1 (uuid={vm1_uuid}) ...", file=sys.stderr)
-            ping1 = _ping_vm(vm1_uuid)
-            result["tests"]["vm1_reachable"] = {
-                "passed": ping1["passed"],
-                "status": ping1["status"],
-                "output": ping1.get("output", ""),
-            }
-            if ping1.get("error"):
-                result["tests"]["vm1_reachable"]["error"] = ping1["error"]
+            # SSH in and ping the other VM's private IP
+            print(f"[net-conn] {label}: pinging {dst_ip} from {src_ip} ...", file=sys.stderr)
+            try:
+                _client = _paramiko.SSHClient()
+                _client.set_missing_host_key_policy(_paramiko.AutoAddPolicy())
+                _client.connect(src_ip, username="ubuntu", key_filename=key_file,
+                                timeout=30, allow_agent=False, look_for_keys=False)
+                _, _out, _ = _client.exec_command(f"ping -c 3 -W 3 {dst_ip}", timeout=20)
+                _exit = _out.channel.recv_exit_status()
+                _output = _out.read().decode().strip()
+                _client.close()
+                _passed = _exit == 0
+                return {"passed": _passed, "output": _output,
+                        "message": f"ping {dst_ip} from {src_ip}: {'OK' if _passed else 'FAILED'}"}
+            except Exception as exc:
+                return {"passed": False, "error": str(exc)}
 
-        if vm2_uuid:
-            print(f"[net-conn] pinging VM2 (uuid={vm2_uuid}) ...", file=sys.stderr)
-            ping2 = _ping_vm(vm2_uuid)
-            result["tests"]["vm2_reachable"] = {
-                "passed": ping2["passed"],
-                "status": ping2["status"],
-                "output": ping2.get("output", ""),
-            }
-            if ping2.get("error"):
-                result["tests"]["vm2_reachable"]["error"] = ping2["error"]
+        print("[net-conn] testing VM1 → VM2 connectivity (in-guest ping) ...", file=sys.stderr)
+        result["tests"]["vm1_reachable"] = _wait_ssh_and_ping(
+            "VM1", vm1["public_ip"], vm2["private_ip"]
+        )
+        print("[net-conn] testing VM2 → VM1 connectivity (in-guest ping) ...", file=sys.stderr)
+        result["tests"]["vm2_reachable"] = _wait_ssh_and_ping(
+            "VM2", vm2["public_ip"], vm1["private_ip"]
+        )
 
         # ── Step 5: Overall success ────────────────────────────────────────────
         result["success"] = all(
