@@ -771,6 +771,20 @@ def _test_traffic_blocked(vm_a_public_ip: str, key_file: str, vm_b_private_ip: s
 
 
 
+def _ssh_run(public_ip: str, key_file: str, command: str, timeout: int = 30) -> tuple[int, str, str]:
+    """Run a command on a remote VM via SSH, return (exit_code, stdout, stderr)."""
+    _client = paramiko.SSHClient()
+    _client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    _client.connect(public_ip, username="ubuntu", key_filename=key_file,
+                    timeout=30, allow_agent=False, look_for_keys=False)
+    try:
+        _, _out, _err = _client.exec_command(command, timeout=timeout)
+        _exit = _out.channel.recv_exit_status()
+        return _exit, _out.read().decode(), _err.read().decode()
+    finally:
+        _client.close()
+
+
 def _test_internet_icmp(public_ip: str, key_file: str) -> dict[str, Any]:
     """internet_icmp: SSH into VM-A and ping 8.8.8.8 (Google DNS).
 
