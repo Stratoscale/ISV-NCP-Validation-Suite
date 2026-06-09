@@ -173,6 +173,43 @@ commands:
         timeout: 180
         output_schema: vpc_peering
 
+      # ── zCompute guestnet-admin-tool connectivity tests ──────────────────────
+      # These replace the upstream SSM-based NetworkConnectivityCheck and
+      # TrafficFlowCheck. SSM agents are not available in zCompute; instead
+      # we use the native guestnet-admin-tool API which lets the management
+      # plane issue arping/ping commands to tenant VMs via their DHCP server.
+      #
+      # continue_on_failure: true because these are custom zCompute workarounds
+      # that NVIDIA may not fully accept as equivalent to the SSM-based tests.
+      #
+      # network_connectivity_test:
+      #   Creates a VPC + 2 VMs, translates instance IDs to zCompute UUIDs,
+      #   arping each VM from the management plane, verifies "Received" response.
+      #
+      # traffic_flow_test:
+      #   Creates 2 VPCs + 1 VM each, runs 4 sub-tests:
+      #     traffic_allowed  — arping VM-A within its own VPC (should succeed)
+      #     traffic_blocked  — arping from VPC-A context to VM-B's IP in VPC-B
+      #                        (should fail — validates L2 isolation between VPCs)
+      #     internet_icmp    — ICMP ping from VPC-A to 172.29.0.20 (soft pass if
+      #                        management plane blocks ICMP)
+      #     internet_http    — HTTPS to 172.29.0.20 from the test runner
+      - name: network_connectivity
+        phase: test
+        command: "python3 ../scripts/network/network_connectivity_test.py"
+        args: ["--region", "{{region}}"]
+        timeout: 900
+        continue_on_failure: true
+        output_schema: network_connectivity
+
+      - name: traffic_flow
+        phase: test
+        command: "python3 ../scripts/network/traffic_flow_test.py"
+        args: ["--region", "{{region}}"]
+        timeout: 1200
+        continue_on_failure: true
+        output_schema: traffic_flow
+
       # Backend switch fabric — queries gpunet-pool for GPU leaf switch IDs
       - name: backend_switch_fabric
         phase: test
@@ -221,9 +258,9 @@ tests:
 
   exclude:
     tests:
-      # SSM-dependent — SSM agent not available in zCompute
-      - NetworkConnectivityCheck
-      - TrafficFlowCheck
+      # NetworkConnectivityCheck and TrafficFlowCheck are NO LONGER excluded.
+      # They are now driven by custom zCompute steps (network_connectivity and
+      # traffic_flow) that use guestnet-admin-tool instead of SSM agents.
       # DNS — under investigation for zCompute support
       # - LocalizedDnsCheck
       # SG scoping — subnet/service not supported
