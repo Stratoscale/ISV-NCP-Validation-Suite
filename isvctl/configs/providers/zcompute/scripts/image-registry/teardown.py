@@ -289,7 +289,7 @@ def main() -> int:
     )
     parser.add_argument("--region", default=os.environ.get("AWS_REGION", "symphony"))
     # These come from the step outputs via config template substitution
-    parser.add_argument("--image-id", default="", help="AMI ID from upload_image step")
+    parser.add_argument("--image-id", nargs="?", const="", default="", help="AMI ID from upload_image step")
     parser.add_argument("--instance-id", nargs="?", const="", default="", help="Instance ID from launch_instance step")
     parser.add_argument("--eip-allocation-id", nargs="?", const="", default="", help="EIP allocation ID")
     parser.add_argument("--key-name", nargs="?", const="", default="", help="Key pair name")

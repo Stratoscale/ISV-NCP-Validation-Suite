@@ -175,7 +175,7 @@ def main() -> int:
                 "machine-images", "import-machine-image-from-url",
                 "--description", f"ISV NCP image registry test — {run_tag}",
                 "--guest-os", "linux",
-                "--scope", "public",
+                "--scope", "account",
                 image_name,
                 bdm,
             ],
