@@ -194,21 +194,22 @@ commands:
       #     internet_icmp    — ICMP ping from VPC-A to 172.29.0.20 (soft pass if
       #                        management plane blocks ICMP)
       #     internet_http    — HTTPS to 172.29.0.20 from the test runner
-      - name: network_connectivity
+      # Step names must match what suites/network.yaml references:
+      # NetworkConnectivityCheck expects step: connectivity_test
+      # TrafficFlowCheck expects step: traffic_validation
+      - name: connectivity_test
         phase: test
         command: "python3 ../scripts/network/network_connectivity_test.py"
         args: ["--region", "{{region}}"]
         timeout: 900
         continue_on_failure: true
-        output_schema: network_connectivity
 
-      - name: traffic_flow
+      - name: traffic_validation
         phase: test
         command: "python3 ../scripts/network/traffic_flow_test.py"
         args: ["--region", "{{region}}"]
         timeout: 1200
         continue_on_failure: true
-        output_schema: traffic_flow
 
       # Backend switch fabric — queries gpunet-pool for GPU leaf switch IDs
       - name: backend_switch_fabric

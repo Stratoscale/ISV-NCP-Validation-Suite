@@ -367,7 +367,7 @@ def _launch_vm(ec2: Any, subnet_id: str, sg_id: str, name: str) -> dict[str, Any
         BlockDeviceMappings=[
             {
                 "DeviceName": "/dev/vda",
-                "Ebs": {"VolumeSize": 20, "VolumeType": "gp2", "DeleteOnTermination": True},
+                "Ebs": {"VolumeSize": 100, "VolumeType": "gp2", "DeleteOnTermination": True},
             }
         ],
         TagSpecifications=[
