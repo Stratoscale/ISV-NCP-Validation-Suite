@@ -1,0 +1,122 @@
+# zCompute Image Registry Validation Configuration
+#
+# Imports the provider-agnostic image-registry suite and wires up
+# zCompute-specific scripts. Image import uses symp CLI directly (no S3
+# endpoint required) — images are pulled from a public URL and stored in
+# zCompute's internal VSC object storage.
+#
+# zCompute adaptations:
+#   - Image upload: symp machine-images import-machine-image-from-url
+#     (EC2 ImportImage API not implemented; import from public URL directly)
+#   - Image CRUD create: symp machine-images create-machine-image-from-vm
+#     (EC2 create-image API not implemented in zCompute)
+#   - All boto3 clients use per-service endpoint URLs via ZCOMPUTE_BASE_URL
+#   - SSL verification disabled (self-signed certs)
+#   - No auto public IP — launch script allocates + associates an EIP
+#   - No boto3 waiters — scripts use custom polling loops
+#   - AMI ID mapping: ami- + UUID without hyphens (e.g. ami-47108a82db3f...)
+#   - Single AZ (symphony), single region
+#
+# Excluded bare-metal steps (not applicable to zCompute virtual infrastructure):
+#   - crud_install_config  → excludes InstallConfigCrudCheck (no BMaaS OS Install Config API)
+#   - install_image_bm     → excludes BmFromImageCheck (no bare-metal provisioning)
+#   - install_config_bm    → excludes BmFromConfigCheck (no bare-metal provisioning)
+#
+# Usage:
+#   export ZCOMPUTE_BASE_URL=https://172.29.0.20
+#   export AWS_ACCESS_KEY_ID=<key>
+#   export AWS_SECRET_ACCESS_KEY=<secret>
+#   export AWS_REGION=symphony
+#   uv run isvctl test run -f isvctl/configs/providers/zcompute/config/image-registry.yaml -v
+
+import:
+  - ../../../suites/image-registry.yaml
+
+version: "1.0"
+
+commands:
+  image_registry:
+    phases: ["setup", "test", "teardown"]
+    steps:
+      # Setup: Import Ubuntu minimal image from public URL into zCompute's
+      # internal VSC storage via symp CLI. Returns an EC2-compatible AMI ID.
+      - name: upload_image
+        phase: setup
+        command: "python3 ../scripts/image-registry/upload_image.py"
+        args:
+          - "--image-url"
+          - "{{image_url}}"
+          - "--image-format"
+          - "{{image_format}}"
+          - "--region"
+          - "{{region}}"
+        # Upload + poll until state==ready: typically 10–30 min depending on URL speed
+        timeout: 1800
+
+      # Test: EC2 describe/list, symp create-from-vm, EC2 deregister
+      - name: crud_image
+        phase: test
+        command: "python3 ../scripts/image-registry/crud_image.py"
+        args:
+          - "--image-id"
+          - "{{steps.upload_image.image_id}}"
+          - "--region"
+          - "{{region}}"
+        # create-from-vm waits for the new image to reach ready state
+        timeout: 900
+
+      # Test: Launch a VM from the uploaded image, allocate EIP, wait for SSH
+      - name: launch_instance
+        phase: test
+        command: "python3 ../scripts/image-registry/launch_instance.py"
+        args:
+          - "--image-id"
+          - "{{steps.upload_image.image_id}}"
+          - "--instance-type"
+          - "{{instance_type}}"
+          - "--region"
+          - "{{region}}"
+        # Launch + EIP + SSH wait: ~10 min for a minimal cloud image
+        timeout: 900
+
+      # Teardown: best-effort cleanup of all isv-ir-* resources
+      - name: teardown
+        phase: teardown
+        command: "python3 ../scripts/image-registry/teardown.py"
+        args:
+          - "--region"
+          - "{{region}}"
+          - "--image-id"
+          - "{{steps.upload_image.image_id}}"
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--eip-allocation-id"
+          - "{{steps.launch_instance.eip_allocation_id}}"
+          - "--key-name"
+          - "{{steps.launch_instance.key_name}}"
+          - "--security-group-id"
+          - "{{steps.launch_instance.security_group_id}}"
+          - "{{teardown_flag}}"
+        timeout: 600
+
+tests:
+  cluster_name: "zcompute-image-registry-validation"
+  description: "zCompute image registry: import from URL, CRUD, launch VM, teardown"
+
+  settings:
+    region: "symphony"
+    instance_type: "z2.3large"
+    # Ubuntu 24.04 minimal cloud image (qcow2, ~300 MB)
+    image_url: "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img"
+    image_format: "qcow2"
+    teardown_flag: "{{(env.IR_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
+
+  exclude:
+    # Bare-metal steps: zCompute has no BMaaS provisioning API
+    tests:
+      - InstallConfigCrudCheck
+      - BmFromImageCheck
+      - BmFromConfigCheck
+    # vm_ssh (ConnectivityCheck + OsCheck) requires a real SSH-accessible VM.
+    # Remove this exclusion once the image has cloud-init + ubuntu user confirmed.
+    markers: []
