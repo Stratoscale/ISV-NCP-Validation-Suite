@@ -64,58 +64,60 @@ from common.ssh_utils import wait_for_ssh  # noqa: E402
 DEFAULT_SSH_USER = "ubuntu"
 
 
+def _create_vpc_with_igw(ec2: Any, cidr: str = "10.86.0.0/16") -> tuple[str, str, str, str]:
+    """Create a fresh VPC with subnet + IGW + route table for EIP support.
+
+    Returns (vpc_id, subnet_id, igw_id, rtb_id).
+    EIPs require an Internet Gateway attached to the VPC and a default route
+    pointing to it — without this, AssociateAddress fails with
+    'External network not reachable from subnet'.
+    """
+    # 1. VPC
+    vpc_id = ec2.create_vpc(CidrBlock=cidr)["Vpc"]["VpcId"]
+    for _ in range(24):
+        if ec2.describe_vpcs(VpcIds=[vpc_id])["Vpcs"][0].get("State") == "available":
+            break
+        time.sleep(5)
+    print(f"[launch] created VPC {vpc_id}", file=sys.stderr)
+
+    # 2. Subnet
+    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock=cidr.replace(".0/16", ".1.0/24"))["Subnet"]["SubnetId"]
+    for _ in range(24):
+        subnets = ec2.describe_subnets().get("Subnets", [])
+        sn = next((s for s in subnets if s["SubnetId"] == subnet_id), None)
+        if sn and sn.get("State") == "available":
+            break
+        time.sleep(5)
+    print(f"[launch] created subnet {subnet_id}", file=sys.stderr)
+
+    # 3. Internet Gateway + attach
+    igw_id = ec2.create_internet_gateway()["InternetGateway"]["InternetGatewayId"]
+    ec2.attach_internet_gateway(InternetGatewayId=igw_id, VpcId=vpc_id)
+    print(f"[launch] attached IGW {igw_id}", file=sys.stderr)
+
+    # 4. Route table with default route → IGW
+    rtb_id = ec2.create_route_table(VpcId=vpc_id)["RouteTable"]["RouteTableId"]
+    ec2.create_route(RouteTableId=rtb_id, DestinationCidrBlock="0.0.0.0/0", GatewayId=igw_id)
+    ec2.associate_route_table(RouteTableId=rtb_id, SubnetId=subnet_id)
+    print(f"[launch] route table {rtb_id} with default route", file=sys.stderr)
+
+    return vpc_id, subnet_id, igw_id, rtb_id
+
+
 def _get_or_create_vpc_and_subnet(ec2: Any) -> tuple[str, str, bool]:
     """Return (vpc_id, subnet_id, created_new).
 
-    Uses ZCOMPUTE_TEST_VPC_ID if set; otherwise auto-discovers the first
-    available VPC. zCompute ignores vpc-id filters on describe_subnets so
-    we fetch all subnets and correlate in Python.
-
-    Returns (vpc_id, subnet_id, created_new) where created_new is True if
-    this function created a new VPC (for teardown to clean up).
+    Always creates a fresh VPC with IGW so that EIP association works.
+    EIPs require an IGW attached to the VPC and a 0.0.0.0/0 route.
+    Stores the IGW and route table IDs in the result dict for cleanup.
     """
-    vpc_id = os.environ.get("ZCOMPUTE_TEST_VPC_ID", "").strip()
-    created_new = False
-
-    if not vpc_id:
-        vpcs = ec2.describe_vpcs().get("Vpcs", [])
-        if vpcs:
-            vpc_id = vpcs[0]["VpcId"]
-            print(f"[launch] auto-discovered VPC: {vpc_id}", file=sys.stderr)
-        else:
-            # Create a minimal VPC for the test
-            print("[launch] no VPCs found — creating 10.86.0.0/16 VPC", file=sys.stderr)
-            vpc_resp = ec2.create_vpc(CidrBlock="10.86.0.0/16")
-            vpc_id = vpc_resp["Vpc"]["VpcId"]
-            created_new = True
-            # Poll until available (zCompute VPCs start in 'pending')
-            for _ in range(20):
-                vpc_info = ec2.describe_vpcs(VpcIds=[vpc_id])["Vpcs"][0]
-                if vpc_info.get("State") == "available":
-                    break
-                time.sleep(5)
-            print(f"[launch] created VPC: {vpc_id}", file=sys.stderr)
-
-            # Create subnet
-            subnet_resp = ec2.create_subnet(
-                VpcId=vpc_id, CidrBlock="10.86.0.0/24"
-            )
-            subnet_id = subnet_resp["Subnet"]["SubnetId"]
-            # Poll until available
-            for _ in range(20):
-                sn_info = ec2.describe_subnets(SubnetIds=[subnet_id])["Subnets"][0]
-                if sn_info.get("State") == "available":
-                    break
-                time.sleep(5)
-            print(f"[launch] created subnet: {subnet_id}", file=sys.stderr)
-            return vpc_id, subnet_id, created_new
-
-    # Find a subnet in the VPC
-    all_subnets = ec2.describe_subnets().get("Subnets", [])
-    subnets = [s for s in all_subnets if s.get("VpcId") == vpc_id]
-    if not subnets:
-        raise RuntimeError(f"No subnets found in VPC {vpc_id}")
-    return vpc_id, subnets[0]["SubnetId"], created_new
+    # Always create a fresh VPC with full networking for EIP support
+    vpc_id, subnet_id, igw_id, rtb_id = _create_vpc_with_igw(ec2, "10.86.0.0/16")
+    # Store IGW and RTB IDs as module-level variables for teardown
+    _create_vpc_with_igw._last_igw_id = igw_id
+    _create_vpc_with_igw._last_rtb_id = rtb_id
+    _create_vpc_with_igw._last_vpc_id = vpc_id
+    return vpc_id, subnet_id, True
 
 
 def _find_instance_by_key(ec2: Any, key_name: str, launched_after: float) -> str | None:

@@ -53,10 +53,10 @@ _DEFAULT_PREBAKED_VM_ID = "b867e0dd-780f-44b3-aaae-f4c2a4607fad"
 def symp_cmd(args: list[str], timeout: int = 60) -> Any:
     """Run a symp CLI command inside the symp_docker container and return JSON."""
     url = os.environ.get("ZCOMPUTE_SYMP_URL", "http://172.29.0.20")
-    user = os.environ.get("ZCOMPUTE_SYMP_USER", "admin")
-    domain = os.environ.get("ZCOMPUTE_SYMP_DOMAIN", "cloud_admin")
-    password = os.environ.get("ZCOMPUTE_SYMP_PASSWORD", "admin")
-    project = os.environ.get("ZCOMPUTE_SYMP_PROJECT", "default")
+    user = os.environ.get("ZCOMPUTE_SYMP_USER", "amitor")
+    domain = os.environ.get("ZCOMPUTE_SYMP_DOMAIN", "amitor")
+    password = os.environ.get("ZCOMPUTE_SYMP_PASSWORD", "S123456!")
+    project = os.environ.get("ZCOMPUTE_SYMP_PROJECT", "ISV")
     container = os.environ.get("ZCOMPUTE_SYMP_CONTAINER", "symp_docker")
 
     cmd = [
