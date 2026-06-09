@@ -23,7 +23,7 @@ Output JSON:
     "success": true,
     "platform": "image_registry",
     "test_name": "teardown",
-    "resources_deleted": true
+    "resources_deleted": []
 }
 """
 
@@ -306,7 +306,7 @@ def main() -> int:
         "success": True,
         "platform": "image_registry",
         "test_name": "teardown",
-        "resources_deleted": True,
+        "resources_deleted": [],
     }
 
     if args.skip_destroy:

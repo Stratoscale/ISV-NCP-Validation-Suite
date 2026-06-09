@@ -65,7 +65,8 @@ commands:
         # create-from-vm waits for the new image to reach ready state
         timeout: 900
 
-      # Test: Launch a VM from the uploaded image, allocate EIP, wait for SSH
+      # Test: Launch a VM from the uploaded image to verify VM-from-image capability.
+      # The image is imported with --scope account so EC2 RunInstances can find it.
       - name: launch_instance
         phase: test
         command: "python3 ../scripts/image-registry/launch_instance.py"
