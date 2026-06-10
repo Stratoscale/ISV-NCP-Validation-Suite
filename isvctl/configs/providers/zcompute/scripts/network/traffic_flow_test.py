@@ -1,81 +1,19 @@
 #!/usr/bin/env python3
-"""zCompute traffic flow test — replaces SSM-based TrafficFlowCheck.
+"""TrafficFlowCheck — zCompute implementation.
 
-NVIDIA's upstream TrafficFlowCheck uses SSM to run connectivity checks from
-inside VMs. zCompute does not have SSM agents, so we replace it with a
-combination of guestnet-admin-tool primitives that test the same scenarios
-using the management plane as the probe origin.
+What this test does:
+  Launches VM-A in VPC-A and VM-B in VPC-B (two isolated VPCs), waits for SSH
+  on VM-A, then runs 4 probes from inside VM-A via SSH:
+    1. traffic_allowed  — ping VPC-A's gateway → proves internal connectivity
+    2. traffic_blocked  — ping VM-B's private IP → expects failure (no cross-VPC route)
+    3. internet_icmp    — ping 8.8.8.8 → proves outbound internet ICMP via IGW
+    4. internet_http    — curl https://google.com → proves outbound internet HTTP/S
 
-Test design rationale
-─────────────────────
-Four sub-tests map directly to what TrafficFlowCheck validates:
-
-  traffic_allowed
-    guestnet-admin-tool arping to VM-A (lives in VPC-A). The DHCP server for
-    VPC-A is on the same L2 segment as VM-A, so arping should always succeed.
-    This validates that VM-A is up and reachable on its L2 domain.
-
-  traffic_blocked
-    guestnet-admin-tool arping from VPC-A's network context to VM-B's private
-    IP (VM-B is in VPC-B — a different, non-peered VPC). ARP is L2-only; a
-    different VPC is a different L2 domain, so the arping should fail/timeout.
-    "status=failed OR 'Received 0' in output" → traffic is correctly isolated
-    → test PASSES (we are testing that blocking works).
-
-  internet_icmp
-    SSH into VM-A (which has a public EIP on a subnet with an IGW) and run
-    `ping -c 3 8.8.8.8`. If 8.8.8.8 responds, the VM has real internet ICMP
-    access via the IGW. This is the same probe that SSM would have run from
-    inside the instance.
-
-  internet_http
-    SSH into VM-A and run `curl -s --max-time 10 https://google.com`. A 2xx/3xx
-    response confirms the VM can reach the public internet over HTTP/S. This is
-    the equivalent of what SSM's TrafficFlowCheck does for internet_http.
-
-Infrastructure
-──────────────
-  VPC-A (10.85.0.0/16) with subnet 10.85.1.0/24 — VM-A lives here
-  VPC-B (10.84.0.0/16) with subnet 10.84.1.0/24 — VM-B lives here
-  The two VPCs are intentionally NOT peered so L2 isolation holds.
-
-zCompute quirks handled:
-  - No boto3 waiters — poll loops throughout.
-  - No auto public IP — EIPs for VMs.
-  - guestnet-admin-tool ping-vm needs internal zCompute UUID (not i-xxx).
-  - guestnet-admin-tool ping-ip needs the internal network UUID for the
-    source network (not the VPC ID from EC2 API).
-    Use 'symp vpc network list -f json' → match by vpc_id field.
-  - TagSpecifications not supported in CreateSecurityGroup — create then tag.
-  - run_instances may return empty Instances[] — fall back to poll by name.
-
-Environment variables:
-  ZCOMPUTE_TEST_AMI_ID            - AMI to launch (required)
-  ZCOMPUTE_TEST_INSTANCE_TYPE     - Instance type (required)
-  ZCOMPUTE_BASE_URL               - https://172.29.0.20 (required)
-  AWS_ACCESS_KEY_ID               - required
-  AWS_SECRET_ACCESS_KEY           - required
-  AWS_REGION                      - default: symphony
-
-  ZCOMPUTE_SYMP_URL               - default http://172.29.0.20
-  ZCOMPUTE_SYMP_USER              - default admin
-  ZCOMPUTE_SYMP_DOMAIN            - default cloud_admin
-  ZCOMPUTE_SYMP_PASSWORD          - default admin
-  ZCOMPUTE_SYMP_PROJECT           - default default
-  ZCOMPUTE_SYMP_CONTAINER         - default symp_docker
-
-Output JSON:
-{
-    "success": true,
-    "platform": "network",
-    "test_name": "traffic_flow",
-    "tests": {
-        "traffic_allowed":  {"passed": true},
-        "traffic_blocked":  {"passed": true},
-        "internet_icmp":    {"passed": true},
-        "internet_http":    {"passed": true}
-    }
-}
+What NVIDIA's original test does (SSM-based):
+  - Launches instances in VPCs
+  - Uses SSM agent to run ping/curl commands from inside the instance
+  - Verifies allowed traffic flows, blocked traffic is rejected, and internet works
+  We replace SSM with SSH — same commands, same pass/fail criteria.
 
 Usage:
     python3 traffic_flow_test.py --region symphony

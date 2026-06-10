@@ -1,61 +1,18 @@
 #!/usr/bin/env python3
-"""zCompute network connectivity test — replaces SSM-based NetworkConnectivityCheck.
+"""NetworkConnectivityCheck — zCompute implementation.
 
-NVIDIA's upstream NetworkConnectivityCheck uses SSM (AWS Systems Manager) to run
-commands inside VMs. zCompute does not have SSM agents, so we replace it with
-the native zCompute guestnet-admin-tool, which lets the management plane issue
-arping commands to any tenant VM via its DHCP server — bypassing security groups.
+What this test does:
+  Launches 2 VMs in the same VPC, waits for SSH on both, then SSHes into
+  each VM and pings the other's private IP. Both pings must succeed (0% loss).
 
-What this script does:
-  1. Creates a fresh VPC + subnet + security group (ICMP + SSH allowed).
-  2. Launches 2 VMs (ZCOMPUTE_TEST_AMI_ID / ZCOMPUTE_TEST_INSTANCE_TYPE).
-  3. Allocates EIPs so each VM has a public IP.
-  4. Waits for both VMs to reach 'running' state.
-  5. Translates EC2 instance IDs → internal zCompute UUIDs via 'symp vm list'.
-  6. Calls 'guestnet-admin-tool ping-vm create --command-type arping' for each VM.
-  7. Polls 'ping-vm get' until status leaves 'pending' (max 30 s).
-  8. Records success = status == 'succeeded' AND output contains 'Received'.
-  9. Cleans up ALL resources in a finally block (never raises from cleanup).
-  10. Outputs the JSON structure expected by NetworkConnectivityCheck.
+What NVIDIA's original test does (SSM-based):
+  - Launches instances in a VPC
+  - Uses SSM agent (running inside the instance) to execute ping commands
+  - Verifies instances can reach each other over the internal network
+  We replace SSM with SSH — same probe, different execution channel.
 
-Output JSON:
-{
-    "success": true,
-    "platform": "network",
-    "test_name": "network_connectivity",
-    "instances": [
-        {"private_ip": "10.0.1.x", "public_ip": "172.28.x.x"},
-        {"private_ip": "10.0.1.y", "public_ip": "172.28.x.y"}
-    ],
-    "tests": {
-        "vm1_reachable": {"passed": true},
-        "vm2_reachable": {"passed": true}
-    }
-}
-
-zCompute quirks handled:
-  - No boto3 waiters — replaced with poll loops throughout.
-  - No auto-assigned public IP — EIPs allocated and associated manually.
-  - run_instances may return empty Instances[] — falls back to poll by key name + LaunchTime.
-  - describe_instances may ignore InstanceIds filter — post-filtered in Python.
-  - TagSpecifications not supported in CreateSecurityGroup — stripped and re-tagged.
-  - Instances sometimes land in 'shutoff' state — we send start_instances to recover.
-  - symp vm list returns objects with 'id' (internal UUID) and 'name' fields.
-
-Environment variables:
-  ZCOMPUTE_TEST_AMI_ID            - AMI to launch (required)
-  ZCOMPUTE_TEST_INSTANCE_TYPE     - Instance type (required, e.g. z2.3large)
-  ZCOMPUTE_BASE_URL               - https://172.29.0.20 (required)
-  AWS_ACCESS_KEY_ID               - required
-  AWS_SECRET_ACCESS_KEY           - required
-  AWS_REGION                      - default: symphony
-
-  ZCOMPUTE_SYMP_URL               - symp endpoint, default http://172.29.0.20
-  ZCOMPUTE_SYMP_USER              - default admin
-  ZCOMPUTE_SYMP_DOMAIN            - default cloud_admin
-  ZCOMPUTE_SYMP_PASSWORD          - default admin
-  ZCOMPUTE_SYMP_PROJECT           - default default
-  ZCOMPUTE_SYMP_CONTAINER         - default symp_docker
+Usage:
+    python3 network_connectivity_test.py --region symphony
 
 Usage:
     python3 network_connectivity_test.py --region symphony

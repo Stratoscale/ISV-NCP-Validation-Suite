@@ -81,7 +81,7 @@ def _create_vpc_with_igw(ec2: Any, cidr: str = "10.86.0.0/16") -> tuple[str, str
     print(f"[launch] created VPC {vpc_id}", file=sys.stderr)
 
     # 2. Subnet
-    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock=cidr.replace(".0/16", ".1.0/24"))["Subnet"]["SubnetId"]
+    subnet_id = ec2.create_subnet(VpcId=vpc_id, CidrBlock=".".join(cidr.split(".")[:2]) + ".1.0/24")["Subnet"]["SubnetId"]
     for _ in range(24):
         subnets = ec2.describe_subnets().get("Subnets", [])
         sn = next((s for s in subnets if s["SubnetId"] == subnet_id), None)
