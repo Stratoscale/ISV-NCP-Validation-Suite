@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
 """TrafficFlowCheck — zCompute implementation.
 
-What this test does:
-  Launches VM-A in VPC-A and VM-B in VPC-B (two isolated VPCs), waits for SSH
-  on VM-A, then runs 4 probes from inside VM-A via SSH:
-    1. traffic_allowed  — ping VPC-A's gateway → proves internal connectivity
-    2. traffic_blocked  — ping VM-B's private IP → expects failure (no cross-VPC route)
-    3. internet_icmp    — ping 8.8.8.8 → proves outbound internet ICMP via IGW
-    4. internet_http    — curl https://google.com → proves outbound internet HTTP/S
+Mirrors NVIDIA's original test exactly: one VPC, three VMs, two security
+groups. SSH replaces SSM as the remote execution channel — same commands,
+same pass/fail criteria.
 
-What NVIDIA's original test does (SSM-based):
-  - Launches instances in VPCs
-  - Uses SSM agent to run ping/curl commands from inside the instance
-  - Verifies allowed traffic flows, blocked traffic is rejected, and internet works
-  We replace SSM with SSH — same commands, same pass/fail criteria.
+zCompute enforces security groups on private IP traffic between VMs in the
+same subnet, so no special topology workaround is needed.
+
+Topology
+--------
+  VPC (10.84.0.0/16)
+   └─ subnet (10.84.1.0/24)
+       ├─ source       [sg_source: SSH inbound]     — SSH in here; has EIP
+       ├─ target_allow [sg_allow:  ICMP + SSH]      — ping private IP must succeed
+       └─ target_deny  [sg_deny:   SSH only]        — ping private IP must fail (SG drops ICMP)
+
+Sub-tests (all run from inside source via SSH):
+  traffic_allowed  — ping target_allow private IP → must succeed (SG allows ICMP)
+  traffic_blocked  — ping target_deny  private IP → must fail   (SG blocks ICMP)
+  internet_icmp    — ping 8.8.8.8                 → must succeed
+  internet_http    — curl https://google.com       → must succeed
 
 Usage:
     python3 traffic_flow_test.py --region symphony
@@ -30,103 +37,31 @@ import uuid
 from typing import Any
 
 import paramiko
-
 from botocore.exceptions import ClientError
 
-# Add zcompute common to path (script lives at scripts/network/).
 _HERE = __import__("pathlib").Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent))  # providers/zcompute/scripts/
 
-from common.client import get_client              # noqa: E402
+from common.client import get_client               # noqa: E402
 from common.ec2 import allocate_and_associate_eip  # noqa: E402
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 _RUN_TAG = f"isv-net-flow-{uuid.uuid4().hex[:8]}"
 
-# Two separate VPCs in non-overlapping blocks. The blocks were chosen to avoid
-# collisions with other network test scripts (which use 10.83, 10.87-10.99).
-_VPC_A_CIDR = "10.85.0.0/16"
-_VPC_A_SUBNET = "10.85.1.0/24"
-_VPC_B_CIDR = "10.84.0.0/16"
-_VPC_B_SUBNET = "10.84.1.0/24"
+_VPC_CIDR    = "10.84.0.0/16"
+_SUBNET_CIDR = "10.84.1.0/24"
 
-# zCompute management plane IP — used as the target for internet_icmp and
-# internet_http tests. In a private-cloud context this is the "external" target.
-_MANAGEMENT_IP = "172.29.0.20"
-
-# guestnet-admin-tool polling parameters
-_PING_POLL_TIMEOUT = 90
-_PING_POLL_INTERVAL = 3
-
-# VM launch timeout
 _VM_LAUNCH_TIMEOUT = 600
 
 
-# ── symp CLI helper ────────────────────────────────────────────────────────────
-
-def _symp_cmd(args: list[str], timeout: int = 30) -> Any:
-    """Run a symp CLI command via docker exec and return parsed JSON.
-
-    Identical pattern to backend_switch_fabric_test.py / network_connectivity_test.py.
-    All auth flags are read from environment variables with sensible defaults.
-
-    Args:
-        args:    symp subcommand + arguments (without auth flags or -f json).
-        timeout: subprocess timeout in seconds.
-
-    Returns:
-        Parsed JSON (list or dict depending on the command).
-
-    Raises:
-        RuntimeError: If subprocess exits non-zero.
-        json.JSONDecodeError: If output is not valid JSON.
-    """
-    import subprocess
-
-    url = os.environ.get("ZCOMPUTE_SYMP_URL", "http://172.29.0.20")
-    user = os.environ.get("ZCOMPUTE_SYMP_USER", "admin")
-    domain = os.environ.get("ZCOMPUTE_SYMP_DOMAIN", "cloud_admin")
-    password = os.environ.get("ZCOMPUTE_SYMP_PASSWORD", "admin")
-    project = os.environ.get("ZCOMPUTE_SYMP_PROJECT", "default")
-    container = os.environ.get("ZCOMPUTE_SYMP_CONTAINER", "symp_docker")
-
-    cmd = [
-        "sudo", "docker", "exec", container,
-        "symp", "-q", "-k",
-        "--username", user,
-        "--domain", domain,
-        "--password", password,
-        "--project", project,
-        "--url", url,
-    ] + args + ["-f", "json"]
-
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"symp command failed (rc={proc.returncode}): "
-            f"{proc.stderr.strip() or proc.stdout.strip()}"
-        )
-    return json.loads(proc.stdout)
-
-
-# ── VPC creation ───────────────────────────────────────────────────────────────
+# ── Network creation ───────────────────────────────────────────────────────────
 
 def _poll_vpc_available(ec2: Any, vpc_id: str, timeout: int = 120) -> None:
-    """Poll until VPC transitions from 'pending' to 'available'.
-
-    zCompute does not support boto3 waiters, so all state checks are manual
-    poll loops. VPCs briefly stay in 'pending' right after creation.
-
-    Args:
-        ec2:     boto3 EC2 client.
-        vpc_id:  VPC ID.
-        timeout: Maximum seconds to wait before raising.
-    """
+    """Poll until VPC leaves 'pending' and reaches 'available'."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        resp = ec2.describe_vpcs(VpcIds=[vpc_id])
-        state = resp["Vpcs"][0]["State"]
+        state = ec2.describe_vpcs(VpcIds=[vpc_id])["Vpcs"][0]["State"]
         if state == "available":
             return
         print(f"[net-flow] VPC {vpc_id} state={state}, waiting ...", file=sys.stderr)
@@ -134,119 +69,129 @@ def _poll_vpc_available(ec2: Any, vpc_id: str, timeout: int = 120) -> None:
     raise RuntimeError(f"VPC {vpc_id} did not become 'available' within {timeout}s")
 
 
-def _create_vpc_stack(ec2: Any, label: str, cidr: str, subnet_cidr: str) -> dict[str, str]:
-    """Create a minimal VPC stack: VPC + IGW + subnet + route table + security group.
-
-    'label' is used to distinguish VPC-A from VPC-B in names and log messages.
-    All resources are tagged with _RUN_TAG for reliable cleanup.
-
-    Returns a dict with: vpc_id, subnet_id, sg_id, igw_id, rtb_id.
-
-    TagSpecifications is unsupported in zCompute's CreateSecurityGroup, so we
-    create the SG without tags and then add them separately via create_tags.
-    """
-    tag_suffix = _RUN_TAG
-
-    # ── VPC ────────────────────────────────────────────────────────────────────
-    vpc_resp = ec2.create_vpc(CidrBlock=cidr)
-    vpc_id = vpc_resp["Vpc"]["VpcId"]
+def _create_network(ec2: Any) -> dict[str, str]:
+    """Create VPC + IGW + subnet + route table. Return resource IDs."""
+    vpc_id = ec2.create_vpc(CidrBlock=_VPC_CIDR)["Vpc"]["VpcId"]
     _poll_vpc_available(ec2, vpc_id)
-    ec2.create_tags(
-        Resources=[vpc_id],
-        Tags=[
-            {"Key": "Name", "Value": f"isv-net-flow-{label}-{tag_suffix}"},
-            {"Key": "CreatedBy", "Value": "isvtest"},
-            {"Key": "RunTag", "Value": tag_suffix},
-        ],
-    )
-    print(f"[net-flow] created VPC-{label}: {vpc_id}", file=sys.stderr)
+    ec2.create_tags(Resources=[vpc_id], Tags=[
+        {"Key": "Name",      "Value": f"isv-net-flow-vpc-{_RUN_TAG}"},
+        {"Key": "CreatedBy", "Value": "isvtest"},
+        {"Key": "RunTag",    "Value": _RUN_TAG},
+    ])
+    print(f"[net-flow] created VPC {vpc_id}", file=sys.stderr)
 
-    # ── Internet Gateway ───────────────────────────────────────────────────────
-    igw_resp = ec2.create_internet_gateway()
-    igw_id = igw_resp["InternetGateway"]["InternetGatewayId"]
+    igw_id = ec2.create_internet_gateway()["InternetGateway"]["InternetGatewayId"]
     ec2.attach_internet_gateway(InternetGatewayId=igw_id, VpcId=vpc_id)
-    ec2.create_tags(
-        Resources=[igw_id],
-        Tags=[{"Key": "Name", "Value": f"isv-net-flow-{label}-igw-{tag_suffix}"},
-              {"Key": "CreatedBy", "Value": "isvtest"},
-              {"Key": "RunTag", "Value": tag_suffix}],
-    )
+    ec2.create_tags(Resources=[igw_id], Tags=[
+        {"Key": "Name",      "Value": f"isv-net-flow-igw-{_RUN_TAG}"},
+        {"Key": "CreatedBy", "Value": "isvtest"},
+        {"Key": "RunTag",    "Value": _RUN_TAG},
+    ])
 
-    # ── Subnet ─────────────────────────────────────────────────────────────────
-    azs = ec2.describe_availability_zones()
-    az_name = azs["AvailabilityZones"][0]["ZoneName"]
-    subnet_resp = ec2.create_subnet(VpcId=vpc_id, CidrBlock=subnet_cidr, AvailabilityZone=az_name)
-    subnet_id = subnet_resp["Subnet"]["SubnetId"]
-    ec2.create_tags(
-        Resources=[subnet_id],
-        Tags=[{"Key": "Name", "Value": f"isv-net-flow-{label}-subnet-{tag_suffix}"},
-              {"Key": "CreatedBy", "Value": "isvtest"},
-              {"Key": "RunTag", "Value": tag_suffix}],
-    )
-
-    # MapPublicIpOnLaunch returns AuthFailure in zCompute — silently ignore.
+    az_name = ec2.describe_availability_zones()["AvailabilityZones"][0]["ZoneName"]
+    subnet_id = ec2.create_subnet(
+        VpcId=vpc_id, CidrBlock=_SUBNET_CIDR, AvailabilityZone=az_name
+    )["Subnet"]["SubnetId"]
+    ec2.create_tags(Resources=[subnet_id], Tags=[
+        {"Key": "Name",      "Value": f"isv-net-flow-subnet-{_RUN_TAG}"},
+        {"Key": "CreatedBy", "Value": "isvtest"},
+        {"Key": "RunTag",    "Value": _RUN_TAG},
+    ])
     try:
         ec2.modify_subnet_attribute(SubnetId=subnet_id, MapPublicIpOnLaunch={"Value": True})
     except ClientError:
-        pass
+        pass  # AuthFailure in zCompute — EIPs used instead
 
-    # ── Route table ────────────────────────────────────────────────────────────
-    rtb_resp = ec2.create_route_table(VpcId=vpc_id)
-    rtb_id = rtb_resp["RouteTable"]["RouteTableId"]
+    rtb_id = ec2.create_route_table(VpcId=vpc_id)["RouteTable"]["RouteTableId"]
     ec2.create_route(RouteTableId=rtb_id, DestinationCidrBlock="0.0.0.0/0", GatewayId=igw_id)
     ec2.associate_route_table(RouteTableId=rtb_id, SubnetId=subnet_id)
-    ec2.create_tags(
-        Resources=[rtb_id],
-        Tags=[{"Key": "Name", "Value": f"isv-net-flow-{label}-rtb-{tag_suffix}"},
-              {"Key": "CreatedBy", "Value": "isvtest"},
-              {"Key": "RunTag", "Value": tag_suffix}],
-    )
+    ec2.create_tags(Resources=[rtb_id], Tags=[
+        {"Key": "Name",      "Value": f"isv-net-flow-rtb-{_RUN_TAG}"},
+        {"Key": "CreatedBy", "Value": "isvtest"},
+        {"Key": "RunTag",    "Value": _RUN_TAG},
+    ])
 
-    # ── Security Group ─────────────────────────────────────────────────────────
-    sg_resp = ec2.create_security_group(
-        GroupName=f"isv-net-flow-{label}-sg-{tag_suffix}",
-        Description=f"ISV NCP traffic flow test VPC-{label}",
-        VpcId=vpc_id,
-    )
-    sg_id = sg_resp["GroupId"]
-    ec2.create_tags(
-        Resources=[sg_id],
-        Tags=[{"Key": "Name", "Value": f"isv-net-flow-{label}-sg-{tag_suffix}"},
-              {"Key": "CreatedBy", "Value": "isvtest"},
-              {"Key": "RunTag", "Value": tag_suffix}],
-    )
-    ec2.authorize_security_group_ingress(
-        GroupId=sg_id,
-        IpPermissions=[
-            {"IpProtocol": "icmp", "FromPort": -1, "ToPort": -1,
-             "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
-            {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22,
-             "IpRanges": [{"CidrIp": "0.0.0.0/0"}]},
-        ],
-    )
+    print(f"[net-flow] network ready: subnet={subnet_id}", file=sys.stderr)
+    return {"vpc_id": vpc_id, "subnet_id": subnet_id, "igw_id": igw_id, "rtb_id": rtb_id}
 
-    return {"vpc_id": vpc_id, "subnet_id": subnet_id, "sg_id": sg_id,
-            "igw_id": igw_id, "rtb_id": rtb_id}
+
+# ── Security groups ────────────────────────────────────────────────────────────
+
+def _create_security_groups(ec2: Any, vpc_id: str) -> dict[str, str]:
+    """Create three security groups matching NVIDIA's original test.
+
+    sg_source — source VM: inbound SSH so we can connect.
+    sg_allow  — target_allow: inbound ICMP + SSH permitted.
+    sg_deny   — target_deny: SSH only, NO inbound ICMP.
+
+    zCompute enforces SGs on private IP traffic within the same subnet, so
+    pings from source to target_deny's private IP will be dropped by sg_deny.
+
+    TagSpecifications is not supported in zCompute's CreateSecurityGroup —
+    tags are added separately via create_tags.
+    """
+    def _make(name: str, desc: str) -> str:
+        sg_id = ec2.create_security_group(
+            GroupName=name, Description=desc, VpcId=vpc_id
+        )["GroupId"]
+        ec2.create_tags(Resources=[sg_id], Tags=[
+            {"Key": "Name",      "Value": name},
+            {"Key": "CreatedBy", "Value": "isvtest"},
+            {"Key": "RunTag",    "Value": _RUN_TAG},
+        ])
+        return sg_id
+
+    sg_source = _make(f"isv-net-flow-src-{_RUN_TAG}",   "ISV traffic-flow source VM")
+    ec2.authorize_security_group_ingress(GroupId=sg_source, IpPermissions=[
+        {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22,
+         "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}]},
+    ])
+
+    sg_allow = _make(f"isv-net-flow-allow-{_RUN_TAG}", "ISV traffic-flow allow ICMP")
+    ec2.authorize_security_group_ingress(GroupId=sg_allow, IpPermissions=[
+        {"IpProtocol": "icmp", "FromPort": -1, "ToPort": -1,
+         "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "ICMP from anywhere"}]},
+        {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22,
+         "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}]},
+    ])
+
+    sg_deny = _make(f"isv-net-flow-deny-{_RUN_TAG}",  "ISV traffic-flow deny ICMP")
+    ec2.authorize_security_group_ingress(GroupId=sg_deny, IpPermissions=[
+        # SSH only — no inbound ICMP rule → pings dropped by SG
+        {"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22,
+         "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}]},
+    ])
+
+    print(f"[net-flow] SGs: source={sg_source} allow={sg_allow} deny={sg_deny}", file=sys.stderr)
+    return {"sg_source": sg_source, "sg_allow": sg_allow, "sg_deny": sg_deny}
 
 
 # ── VM launch ──────────────────────────────────────────────────────────────────
 
-def _launch_vm(ec2: Any, subnet_id: str, sg_id: str, name: str) -> dict[str, Any]:
-    """Launch a VM and wait for it to reach 'running'. Return ids and IPs.
+def _launch_vm(
+    ec2: Any,
+    subnet_id: str,
+    sg_id: str,
+    name: str,
+    assign_eip: bool = False,
+) -> dict[str, Any]:
+    """Launch a VM, wait for running state, optionally assign an EIP.
 
-    Handles:
-      - run_instances returning empty Instances[] → fall back to name-tag poll.
-      - Instance landing in 'shutoff' → send start_instances.
-      - No auto-assigned public IP → allocate_and_associate_eip.
+    Only the source VM needs an EIP (so we can SSH into it from outside).
+    Target VMs are only pinged on their private IPs from within the VPC.
+
+    Handles zCompute quirks:
+      - run_instances may return empty Instances[] → poll by Name tag.
+      - Instance may land in 'shutoff' → call start_instances to recover.
     """
-    ami_id = os.environ.get("ZCOMPUTE_TEST_AMI_ID", "")
+    ami_id        = os.environ.get("ZCOMPUTE_TEST_AMI_ID", "")
     instance_type = os.environ.get("ZCOMPUTE_TEST_INSTANCE_TYPE", "z2.3large")
-    key_name = f"isv-net-flow-key-{_RUN_TAG}"
+    key_name      = f"isv-net-flow-key-{_RUN_TAG}"
 
     if not ami_id:
         raise RuntimeError("ZCOMPUTE_TEST_AMI_ID is not set.")
 
-    # ── Key pair (shared by both VMs in this run) ──────────────────────────────
+    # Key pair — shared across all VMs in this run; created once, reused.
     key_file = f"/tmp/{key_name}.pem"
     try:
         ec2.describe_key_pairs(KeyNames=[key_name])
@@ -258,64 +203,54 @@ def _launch_vm(ec2: Any, subnet_id: str, sg_id: str, name: str) -> dict[str, Any
             )
     except ClientError as e:
         if e.response["Error"]["Code"] == "InvalidKeyPair.NotFound":
-            kp_resp = ec2.create_key_pair(KeyName=key_name)
+            kp = ec2.create_key_pair(KeyName=key_name)
             with open(key_file, "w") as fh:
-                fh.write(kp_resp["KeyMaterial"])
+                fh.write(kp["KeyMaterial"])
             os.chmod(key_file, 0o600)
             print(f"[net-flow] created key pair {key_name}", file=sys.stderr)
         else:
             raise
 
     launch_time = time.time()
-
     print(f"[net-flow] launching VM '{name}' ...", file=sys.stderr)
+
     run_resp = ec2.run_instances(
         ImageId=ami_id,
         InstanceType=instance_type,
-        MinCount=1,
-        MaxCount=1,
+        MinCount=1, MaxCount=1,
         KeyName=key_name,
         SubnetId=subnet_id,
         SecurityGroupIds=[sg_id],
-        # zCompute KVM VMs use /dev/vda as the root device, not /dev/sda.
-        BlockDeviceMappings=[
-            {
-                "DeviceName": "/dev/vda",
-                "Ebs": {"VolumeSize": 100, "VolumeType": "gp2", "DeleteOnTermination": True},
-            }
-        ],
-        TagSpecifications=[
-            {
-                "ResourceType": "instance",
-                "Tags": [
-                    {"Key": "Name", "Value": name},
-                    {"Key": "CreatedBy", "Value": "isvtest"},
-                    {"Key": "RunTag", "Value": _RUN_TAG},
-                ],
-            }
-        ],
+        BlockDeviceMappings=[{
+            "DeviceName": "/dev/vda",
+            "Ebs": {"VolumeSize": 100, "VolumeType": "gp2", "DeleteOnTermination": True},
+        }],
+        TagSpecifications=[{
+            "ResourceType": "instance",
+            "Tags": [
+                {"Key": "Name",      "Value": name},
+                {"Key": "CreatedBy", "Value": "isvtest"},
+                {"Key": "RunTag",    "Value": _RUN_TAG},
+            ],
+        }],
     )
 
     instances_list = run_resp.get("Instances", [])
     if instances_list:
         instance_id = instances_list[0]["InstanceId"]
-        private_ip = instances_list[0].get("PrivateIpAddress")
+        private_ip  = instances_list[0].get("PrivateIpAddress")
     else:
-        # zCompute occasionally returns an empty Instances[] from run_instances.
         print(f"[net-flow] run_instances returned empty list — polling by name ...", file=sys.stderr)
         instance_id = _find_instance_by_name(ec2, name, after_timestamp=launch_time)
-        private_ip = None
+        private_ip  = None
 
-    # ── Poll for running state ─────────────────────────────────────────────────
     deadline = time.monotonic() + _VM_LAUNCH_TIMEOUT
     state = "pending"
     while time.monotonic() < deadline:
         try:
             desc = ec2.describe_instances(InstanceIds=[instance_id])
-            # Post-filter because zCompute may ignore the InstanceIds parameter.
             matching = [
-                i
-                for r in desc.get("Reservations", [])
+                i for r in desc.get("Reservations", [])
                 for i in r.get("Instances", [])
                 if i["InstanceId"] == instance_id
             ]
@@ -327,10 +262,9 @@ def _launch_vm(ec2: Any, subnet_id: str, sg_id: str, name: str) -> dict[str, Any
             print(f"[net-flow] describe error (non-fatal): {exc}", file=sys.stderr)
 
         if state == "running":
-            print(f"[net-flow] {instance_id} is running", file=sys.stderr)
+            print(f"[net-flow] {instance_id} ({name}) is running", file=sys.stderr)
             break
         elif state in ("shutoff", "stopped"):
-            # zCompute scheduling quirk — nudge it back to running.
             print(f"[net-flow] {instance_id} in {state} — calling start_instances ...", file=sys.stderr)
             try:
                 ec2.start_instances(InstanceIds=[instance_id])
@@ -341,46 +275,30 @@ def _launch_vm(ec2: Any, subnet_id: str, sg_id: str, name: str) -> dict[str, Any
         time.sleep(20)
     else:
         raise RuntimeError(
-            f"Instance {instance_id} did not reach 'running' in {_VM_LAUNCH_TIMEOUT}s "
-            f"(last state: {state})"
+            f"Instance {instance_id} ({name}) did not reach 'running' in {_VM_LAUNCH_TIMEOUT}s"
         )
 
-    # ── EIP ────────────────────────────────────────────────────────────────────
-    allocation_id, public_ip = allocate_and_associate_eip(ec2, instance_id)
+    public_ip     = None
+    allocation_id = None
+    if assign_eip:
+        allocation_id, public_ip = allocate_and_associate_eip(ec2, instance_id)
 
     return {
-        "instance_id": instance_id,
-        "private_ip": private_ip,
-        "public_ip": public_ip,
+        "instance_id":       instance_id,
+        "private_ip":        private_ip,
+        "public_ip":         public_ip,
         "eip_allocation_id": allocation_id,
-        "key_name": key_name,
+        "key_name":          key_name,
     }
 
 
 def _find_instance_by_name(
     ec2: Any, name: str, after_timestamp: float, timeout: int = 120
 ) -> str:
-    """Poll describe_instances and find the instance with the given Name tag.
-
-    Fallback for when run_instances returns an empty Instances[]. Matches on
-    both the Name tag and launch time to avoid collisions with concurrent tests.
-
-    Args:
-        ec2:             boto3 EC2 client.
-        name:            Instance Name tag value.
-        after_timestamp: Unix timestamp; ignore instances launched before this.
-        timeout:         Maximum seconds to search.
-
-    Returns:
-        EC2 instance ID.
-
-    Raises:
-        RuntimeError: If no matching instance found within timeout.
-    """
+    """Fallback: find instance by Name tag when run_instances returns empty list."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        all_resp = ec2.describe_instances()
-        for reservation in all_resp.get("Reservations", []):
+        for reservation in ec2.describe_instances().get("Reservations", []):
             for inst in reservation.get("Instances", []):
                 tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
                 if tags.get("Name") != name:
@@ -389,392 +307,121 @@ def _find_instance_by_name(
                 if launch_dt:
                     if isinstance(launch_dt, str):
                         import dateutil.parser
-                        launch_ts = dateutil.parser.parse(launch_dt).timestamp()
+                        ts = dateutil.parser.parse(launch_dt).timestamp()
                     else:
-                        launch_ts = launch_dt.timestamp()
-                    if launch_ts < after_timestamp - 5:
+                        ts = launch_dt.timestamp()
+                    if ts < after_timestamp - 5:
                         continue
-                iid = inst.get("InstanceId")
-                if iid:
+                if iid := inst.get("InstanceId"):
                     return iid
         print(f"[net-flow] waiting for instance '{name}' ...", file=sys.stderr)
         time.sleep(10)
     raise RuntimeError(f"Could not find instance with Name='{name}' after {timeout}s")
 
 
-# ── zCompute UUID helpers ──────────────────────────────────────────────────────
+# ── SSH helpers ────────────────────────────────────────────────────────────────
 
-def _get_vm_uuid(vm_name: str) -> str | None:
-    """Translate a VM Name tag to the internal zCompute UUID.
+def _wait_ssh(public_ip: str, timeout: int = 300) -> None:
+    """Block until TCP port 22 is reachable on public_ip."""
+    import socket
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((public_ip, 22), timeout=5):
+                print(f"[net-flow] SSH ready on {public_ip}", file=sys.stderr)
+                return
+        except OSError:
+            time.sleep(10)
+    raise RuntimeError(f"SSH not reachable on {public_ip} after {timeout}s")
 
-    guestnet-admin-tool ping-vm requires the internal UUID, not the EC2 ID.
-    We call 'symp vm list -f json' and match on the 'name' field, which
-    zCompute populates from the EC2 Name tag.
 
-    Args:
-        vm_name: EC2 Name tag value.
-
-    Returns:
-        Internal UUID string, or None if not found.
-    """
+def _ssh_run(public_ip: str, key_file: str, command: str, timeout: int = 30) -> tuple[int, str, str]:
+    """Execute command on remote VM via SSH. Returns (exit_code, stdout, stderr)."""
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(
+        public_ip, username="ubuntu", key_filename=key_file,
+        timeout=30, allow_agent=False, look_for_keys=False,
+    )
     try:
-        vms = _symp_cmd(["vm", "list"], timeout=30)
-        for vm in vms:
-            if vm.get("name") == vm_name:
-                return vm.get("id")
-        print(f"[net-flow] WARNING: VM '{vm_name}' not found in symp vm list", file=sys.stderr)
-    except Exception as exc:
-        print(f"[net-flow] WARNING: symp vm list failed: {exc}", file=sys.stderr)
-    return None
+        _, out, err = client.exec_command(command, timeout=timeout)
+        exit_code = out.channel.recv_exit_status()
+        return exit_code, out.read().decode(), err.read().decode()
+    finally:
+        client.close()
 
 
-def _ec2_vpc_id_to_uuid(ec2_vpc_id: str) -> str:
-    """Convert an EC2 VPC ID to an internal zCompute UUID.
+# ── Sub-tests ──────────────────────────────────────────────────────────────────
 
-    In zCompute the EC2 VPC ID (e.g. vpc-1b21d46e914c4817b995c98418e8de53)
-    is the standard UUID without hyphens, prefixed with "vpc-". The internal
-    symp objects use the standard hyphenated UUID form.
-
-    Example:
-      vpc-1b21d46e914c4817b995c98418e8de53
-        → 1b21d46e-914c-4817-b995-c98418e8de53
-    """
-    hex_str = ec2_vpc_id.removeprefix("vpc-")
-    # Insert hyphens at the standard UUID positions: 8-4-4-4-12
-    return f"{hex_str[0:8]}-{hex_str[8:12]}-{hex_str[12:16]}-{hex_str[16:20]}-{hex_str[20:]}"
-
-
-def _get_network_uuid(vpc_id: str) -> str | None:
-    """Translate an EC2 VPC ID to the internal zCompute network UUID.
-
-    guestnet-admin-tool ping-ip requires the internal network UUID as the
-    source network context, not the EC2 VPC ID. We get it from:
-      'symp vpc network list -f json'
-    which returns objects with 'id' (network UUID) and 'vpc_id' (internal
-    VPC UUID) fields.
-
-    The EC2 VPC ID (vpc-xxx) is the internal UUID without hyphens, so we
-    convert it first before comparing against the symp output.
-
-    Args:
-        vpc_id: EC2 VPC ID (vpc-xxx format).
-
-    Returns:
-        Internal network UUID string, or None if not found.
-    """
+def _test_traffic_allowed(source_public_ip: str, key_file: str, target_private_ip: str) -> dict[str, Any]:
+    """Ping target_allow's private IP — sg_allow permits ICMP, must succeed."""
+    print(f"[net-flow] traffic_allowed: ping {target_private_ip} (SG allows ICMP)", file=sys.stderr)
     try:
-        # Convert "vpc-1b21d46e914c4817..." → "1b21d46e-914c-4817-..."
-        internal_vpc_uuid = _ec2_vpc_id_to_uuid(vpc_id)
-        print(f"[net-flow] looking for network with vpc_id={internal_vpc_uuid} ...", file=sys.stderr)
-
-        networks = _symp_cmd(["vpc", "network", "list"], timeout=30)
-        for net in networks:
-            if net.get("vpc_id") == internal_vpc_uuid:
-                print(f"[net-flow] found network UUID: {net.get('id')}", file=sys.stderr)
-                return net.get("id")
-
-        print(f"[net-flow] WARNING: network for vpc_id={internal_vpc_uuid} not found in symp vpc network list", file=sys.stderr)
-    except Exception as exc:
-        print(f"[net-flow] WARNING: _get_network_uuid failed: {exc}", file=sys.stderr)
-    return None
-
-
-# ── guestnet-admin-tool helpers ────────────────────────────────────────────────
-
-def _ping_vm_arping(zcompute_uuid: str) -> dict[str, Any]:
-    """Arping a VM by its internal UUID via guestnet-admin-tool ping-vm.
-
-    Used for traffic_allowed: proves the VM is reachable on its local L2
-    segment from the DHCP server (management plane), which bypasses SGs.
-
-    Args:
-        zcompute_uuid: Internal zCompute VM UUID.
-
-    Returns:
-        Dict with: passed (bool), status (str), output (str), error (str|None).
-    """
-    result: dict[str, Any] = {"passed": False, "status": "unknown", "output": "", "error": None}
-    try:
-        # Create the arping job
-        create_resp = _symp_cmd(
-            ["guestnet-admin-tool", "ping-vm", "create",
-             "--command-type", "arping",
-             zcompute_uuid],
-            timeout=15,
+        exit_code, stdout, _ = _ssh_run(
+            source_public_ip, key_file, f"ping -c 3 -W 3 {target_private_ip}", timeout=20
         )
-        ping_id = create_resp.get("id")
-        if not ping_id:
-            result["error"] = f"ping-vm create returned no 'id': {create_resp}"
-            return result
-
-        print(f"[net-flow] ping-vm job {ping_id} created, polling ...", file=sys.stderr)
-
-        # Poll until status leaves 'pending'
-        deadline = time.monotonic() + _PING_POLL_TIMEOUT
-        status = "pending"
-        output = ""
-        while time.monotonic() < deadline:
-            get_resp = _symp_cmd(
-                ["guestnet-admin-tool", "ping-vm", "get", ping_id],
-                timeout=15,
-            )
-            status = get_resp.get("status", "unknown")
-            output = get_resp.get("output", "")
-            if status != "pending":
-                break
-            time.sleep(_PING_POLL_INTERVAL)
-        else:
-            result["error"] = f"ping-vm {ping_id} still pending after {_PING_POLL_TIMEOUT}s"
-            result["status"] = "timeout"
-            return result
-
-        result["status"] = status
-        result["output"] = output
-
-        # Success = API says 'succeeded' AND arping output confirms a response.
-        if status == "succeeded" and "Received" in output:
-            result["passed"] = True
-        else:
-            result["error"] = f"status={status!r}, output={output!r}"
-
-    except Exception as exc:
-        result["error"] = str(exc)
-
-    return result
-
-
-def _ping_ip(network_uuid: str, dest_ip: str, command_type: str = "arping") -> dict[str, Any]:
-    """Send an ICMP ping or arping from a given network context to a destination IP.
-
-    Used for both traffic_blocked and internet_icmp tests.
-
-    guestnet-admin-tool ping-ip sends a probe from the L3 context of the
-    specified network (its router namespace on the management plane). The
-    source is the management plane acting on behalf of that network's router.
-
-    command_type choices:
-      arping — L2 ARP probe; only reaches hosts in the same L2 segment.
-      ping   — ICMP L3 ping; reaches any routable IP.
-
-    Args:
-        network_uuid: Internal zCompute network UUID (from 'symp vpc network list').
-        dest_ip:      Destination IP to probe.
-        command_type: 'arping' or 'ping'.
-
-    Returns:
-        Dict with: passed (bool), status (str), output (str), error (str|None).
-    """
-    result: dict[str, Any] = {"passed": False, "status": "unknown", "output": "", "error": None}
-    try:
-        create_resp = _symp_cmd(
-            ["guestnet-admin-tool", "ping-ip", "create",
-             "--command-type", command_type,
-             network_uuid, dest_ip],
-            timeout=15,
-        )
-        ping_id = create_resp.get("id")
-        if not ping_id:
-            result["error"] = f"ping-ip create returned no 'id': {create_resp}"
-            return result
-
-        print(f"[net-flow] ping-ip job {ping_id} ({command_type} {dest_ip}) polling ...", file=sys.stderr)
-
-        deadline = time.monotonic() + _PING_POLL_TIMEOUT
-        status = "pending"
-        output = ""
-        while time.monotonic() < deadline:
-            get_resp = _symp_cmd(
-                ["guestnet-admin-tool", "ping-ip", "get", ping_id],
-                timeout=15,
-            )
-            status = get_resp.get("status", "unknown")
-            output = get_resp.get("output", "")
-            if status != "pending":
-                break
-            time.sleep(_PING_POLL_INTERVAL)
-        else:
-            result["status"] = "timeout"
-            result["error"] = f"ping-ip {ping_id} still pending after {_PING_POLL_TIMEOUT}s"
-            return result
-
-        result["status"] = status
-        result["output"] = output
-
-    except Exception as exc:
-        result["error"] = str(exc)
-
-    return result
-
-
-# ── Individual sub-tests ───────────────────────────────────────────────────────
-
-def _test_traffic_allowed(vm_a_uuid: str | None) -> dict[str, Any]:
-    """traffic_allowed: arping VM-A within its own VPC.
-
-    VM-A's DHCP server is on the same L2 segment. arping from the management
-    plane (which IS the DHCP server) to VM-A should always succeed if VM-A is
-    alive and its L2 domain is healthy.
-
-    PASS condition: ping-vm status == 'succeeded' AND output contains 'Received'.
-    """
-    if not vm_a_uuid:
-        return {"passed": False, "error": "zCompute UUID for VM-A not resolved"}
-
-    result = _ping_vm_arping(vm_a_uuid)
-    return {
-        "passed": result["passed"],
-        "status": result["status"],
-        "output": result.get("output", ""),
-        **({"error": result["error"]} if result.get("error") else {}),
-    }
-
-
-def _test_traffic_allowed(vm_a_public_ip: str, key_file: str, vm_a_private_gw: str = "") -> dict[str, Any]:
-    """traffic_allowed: SSH into VM-A and ping its default gateway.
-
-    guestnet-admin-tool ping-vm only works for management-network VMs, not
-    for tenant VPC VMs created via the EC2 API. We SSH in and ping the VPC
-    gateway IP (first usable IP in the subnet, e.g. 10.85.1.1), which proves:
-      - The VM is alive and reachable via SSH
-      - The L3 default gateway is reachable (L3 connectivity within the VPC)
-
-    PASS condition: ping exits 0 (gateway responds).
-    """
-    # Derive the gateway IP from the VM's private IP subnet (.1 address)
-    # e.g. 10.85.1.45 → 10.85.1.1
-    import paramiko as _pm
-    gw_ip = vm_a_private_gw or "10.85.1.1"
-
-    print(f"[net-flow] traffic_allowed: SSH into VM-A → ping gateway {gw_ip}", file=sys.stderr)
-    try:
-        _client = _pm.SSHClient()
-        _client.set_missing_host_key_policy(_pm.AutoAddPolicy())
-        _client.connect(vm_a_public_ip, username="ubuntu", key_filename=key_file,
-                        timeout=30, allow_agent=False, look_for_keys=False)
-        _, _out, _ = _client.exec_command(f"ping -c 3 -W 3 {gw_ip}", timeout=20)
-        _exit = _out.channel.recv_exit_status()
-        _output = _out.read().decode().strip()
-        _client.close()
-        _passed = _exit == 0
+        passed = exit_code == 0
         return {
-            "passed": _passed,
-            "target": gw_ip,
-            "output": _output,
-            "message": f"ping gateway {gw_ip}: {'OK' if _passed else 'FAILED'}",
+            "passed": passed,
+            "target": target_private_ip,
+            "output": stdout.strip(),
+            "message": f"ping {target_private_ip}: {'OK' if passed else 'FAILED (SG should allow)'}",
         }
     except Exception as exc:
         return {"passed": False, "error": str(exc)}
 
 
-def _test_traffic_blocked(vm_a_public_ip: str, key_file: str, vm_b_private_ip: str | None) -> dict[str, Any]:
-    """traffic_blocked: SSH into VM-A and try to ping VM-B's private IP.
+def _test_traffic_blocked(source_public_ip: str, key_file: str, target_private_ip: str) -> dict[str, Any]:
+    """Ping target_deny's private IP — sg_deny has no ICMP rule, must fail.
 
-    VM-B lives in VPC-B — a separate, non-peered VPC. Without a route between
-    the VPCs, the ping from VM-A to VM-B's private IP should fail with
-    "Network is unreachable" or time out. This confirms L3 isolation.
-
-    PASS condition: ping exits non-zero (no route or no response).
-    The test PASSES when the ping FAILS — we are verifying isolation.
+    zCompute enforces SGs on intra-subnet private IP traffic, so the SG drop
+    is genuine — not routing isolation.
     """
-    if not vm_b_private_ip:
-        return {"passed": False, "error": "Private IP of VM-B not available"}
-
-    import paramiko as _pm
-    print(f"[net-flow] traffic_blocked: SSH into VM-A → ping VM-B {vm_b_private_ip} (should fail)", file=sys.stderr)
+    print(f"[net-flow] traffic_blocked: ping {target_private_ip} (SG denies ICMP, should fail)", file=sys.stderr)
     try:
-        _client = _pm.SSHClient()
-        _client.set_missing_host_key_policy(_pm.AutoAddPolicy())
-        _client.connect(vm_a_public_ip, username="ubuntu", key_filename=key_file,
-                        timeout=30, allow_agent=False, look_for_keys=False)
-        # -c 2 -W 2: 2 packets, 2s wait each — fail fast
-        _, _out, _ = _client.exec_command(f"ping -c 2 -W 2 {vm_b_private_ip}", timeout=15)
-        _exit = _out.channel.recv_exit_status()
-        _output = _out.read().decode().strip()
-        _client.close()
-        # Non-zero exit means ping failed = traffic correctly blocked
-        isolation_confirmed = _exit != 0
+        exit_code, stdout, _ = _ssh_run(
+            source_public_ip, key_file, f"ping -c 2 -W 2 {target_private_ip}", timeout=15
+        )
+        blocked = exit_code != 0
         return {
-            "passed": isolation_confirmed,
-            "target": vm_b_private_ip,
-            "ping_exit_code": _exit,
-            "output": _output,
+            "passed": blocked,
+            "target": target_private_ip,
+            "ping_exit_code": exit_code,
+            "output": stdout.strip(),
             "message": (
-                f"ping VM-B ({vm_b_private_ip}) failed (exit {_exit}) — VPC isolation confirmed"
-                if isolation_confirmed
-                else f"ping VM-B ({vm_b_private_ip}) SUCCEEDED — isolation NOT confirmed"
+                f"ping {target_private_ip} failed (exit {exit_code}) — SG blocking confirmed"
+                if blocked
+                else f"ping {target_private_ip} SUCCEEDED — SG is NOT blocking ICMP"
             ),
         }
     except Exception as exc:
         return {"passed": False, "error": str(exc)}
 
 
-
-def _ssh_run(public_ip: str, key_file: str, command: str, timeout: int = 30) -> tuple[int, str, str]:
-    """Run a command on a remote VM via SSH, return (exit_code, stdout, stderr)."""
-    _client = paramiko.SSHClient()
-    _client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    _client.connect(public_ip, username="ubuntu", key_filename=key_file,
-                    timeout=30, allow_agent=False, look_for_keys=False)
+def _test_internet_icmp(source_public_ip: str, key_file: str) -> dict[str, Any]:
+    """Ping 8.8.8.8 from source — confirms outbound internet ICMP via IGW."""
+    print("[net-flow] internet_icmp: ping 8.8.8.8", file=sys.stderr)
     try:
-        _, _out, _err = _client.exec_command(command, timeout=timeout)
-        _exit = _out.channel.recv_exit_status()
-        return _exit, _out.read().decode(), _err.read().decode()
-    finally:
-        _client.close()
-
-
-def _test_internet_icmp(public_ip: str, key_file: str) -> dict[str, Any]:
-    """internet_icmp: SSH into VM-A and ping 8.8.8.8 (Google DNS).
-
-    VM-A has a public EIP and its subnet has an Internet Gateway, so it has
-    real internet access. We SSH in and run `ping -c 3 8.8.8.8` to confirm
-    outbound ICMP to the public internet works.
-
-    This is the same probe that NVIDIA's SSM-based TrafficFlowCheck would run
-    from inside the instance — we are just using SSH instead of SSM as the
-    remote execution mechanism.
-
-    PASS condition: ping exits 0 (at least one response received from 8.8.8.8).
-    """
-    try:
-        exit_code, stdout, stderr = _ssh_run(
-            public_ip, key_file,
-            "ping -c 3 -W 3 8.8.8.8",
-            timeout=20,
+        exit_code, stdout, _ = _ssh_run(
+            source_public_ip, key_file, "ping -c 3 -W 3 8.8.8.8", timeout=20
         )
         passed = exit_code == 0
         return {
             "passed": passed,
             "target": "8.8.8.8",
-            "exit_code": exit_code,
             "output": stdout.strip(),
-            "message": (
-                "ping 8.8.8.8 succeeded — VM has outbound internet ICMP"
-                if passed
-                else f"ping 8.8.8.8 failed (exit {exit_code})"
-            ),
+            "message": "ping 8.8.8.8 succeeded" if passed else f"ping 8.8.8.8 failed (exit {exit_code})",
         }
     except Exception as exc:
         return {"passed": False, "error": str(exc)}
 
 
-def _test_internet_http(public_ip: str, key_file: str) -> dict[str, Any]:
-    """internet_http: SSH into VM-A and curl https://google.com.
-
-    VM-A has a public EIP and an IGW-backed subnet, so it has real internet
-    access. We SSH in and run curl to confirm outbound HTTPS to the public
-    internet works.
-
-    We check only the HTTP status code (not the body) and accept any response
-    including redirects (3xx) — the important thing is that the TCP+TLS+HTTP
-    stack can reach a public internet host.
-
-    PASS condition: curl returns an HTTP status code (any 2xx or 3xx).
-    """
+def _test_internet_http(source_public_ip: str, key_file: str) -> dict[str, Any]:
+    """Curl https://google.com from source — confirms outbound internet HTTP/S."""
+    print("[net-flow] internet_http: curl https://google.com", file=sys.stderr)
     try:
-        exit_code, stdout, stderr = _ssh_run(
-            public_ip, key_file,
-            # -L follows redirects; -o /dev/null discards body; -w prints status code only
+        exit_code, stdout, _ = _ssh_run(
+            source_public_ip, key_file,
             "curl -s -L --max-time 10 -o /dev/null -w '%{http_code}' https://google.com",
             timeout=20,
         )
@@ -783,37 +430,24 @@ def _test_internet_http(public_ip: str, key_file: str) -> dict[str, Any]:
             http_code = int(http_code_str)
         except ValueError:
             http_code = 0
-
         passed = 200 <= http_code < 400
         return {
             "passed": passed,
             "target": "https://google.com",
             "http_status": http_code,
             "message": (
-                f"curl https://google.com returned HTTP {http_code} — VM has outbound internet HTTP/S"
-                if passed
-                else f"curl failed or returned unexpected status {http_code}"
+                f"curl returned HTTP {http_code}" if passed
+                else f"curl failed or unexpected status {http_code}"
             ),
         }
     except Exception as exc:
         return {"passed": False, "error": str(exc)}
 
 
-# ── Resource cleanup ───────────────────────────────────────────────────────────
+# ── Cleanup ────────────────────────────────────────────────────────────────────
 
 def _cleanup(ec2: Any, resources: dict[str, Any]) -> None:
-    """Best-effort cleanup of all resources created during this test run.
-
-    Called from a finally block — MUST NOT raise. Each operation is individually
-    wrapped to ensure all resources are attempted regardless of partial failures.
-
-    Deletion order (VPC-A then VPC-B):
-      VMs → EIPs → SGs → subnets → route tables → IGWs → VPCs → key pair
-
-    Args:
-        ec2:       boto3 EC2 client.
-        resources: Accumulated resource IDs from _create_vpc_stack and _launch_vm.
-    """
+    """Best-effort cleanup. Called from finally — must not raise."""
 
     def _try(desc: str, fn: Any, *args: Any, **kwargs: Any) -> None:
         try:
@@ -822,7 +456,6 @@ def _cleanup(ec2: Any, resources: dict[str, Any]) -> None:
         except Exception as exc:
             print(f"[net-flow] cleanup WARNING: {desc}: {exc}", file=sys.stderr)
 
-    # ── Terminate VMs ──────────────────────────────────────────────────────────
     for iid in resources.get("instance_ids", []):
         _try(f"instance {iid}", ec2.terminate_instances, InstanceIds=[iid])
 
@@ -833,83 +466,66 @@ def _cleanup(ec2: Any, resources: dict[str, Any]) -> None:
         for iid in resources.get("instance_ids", []):
             while time.monotonic() < deadline:
                 try:
-                    d = ec2.describe_instances(InstanceIds=[iid])
-                    st = d["Reservations"][0]["Instances"][0]["State"]["Name"]
+                    st = ec2.describe_instances(InstanceIds=[iid])[
+                        "Reservations"][0]["Instances"][0]["State"]["Name"]
                     if st in ("terminated", "shutting-down"):
                         break
                 except Exception:
                     break
                 time.sleep(10)
 
-    # ── Release EIPs ───────────────────────────────────────────────────────────
     for alloc_id in resources.get("eip_allocation_ids", []):
         try:
             resp = ec2.describe_addresses(AllocationIds=[alloc_id])
-            assoc_id = resp["Addresses"][0].get("AssociationId")
-            if assoc_id:
+            if assoc_id := resp["Addresses"][0].get("AssociationId"):
                 _try(f"EIP association {assoc_id}", ec2.disassociate_address, AssociationId=assoc_id)
         except Exception:
             pass
         _try(f"EIP {alloc_id}", ec2.release_address, AllocationId=alloc_id)
 
-    # ── Per-VPC resources ─────────────────────────────────────────────────────
-    for vpc_res in resources.get("vpcs", []):
-        sg_id = vpc_res.get("sg_id")
-        rtb_id = vpc_res.get("rtb_id")
-        subnet_id = vpc_res.get("subnet_id")
-        igw_id = vpc_res.get("igw_id")
-        vpc_id = vpc_res.get("vpc_id")
+    for sg_id in resources.get("sg_ids", []):
+        _try(f"SG {sg_id}", ec2.delete_security_group, GroupId=sg_id)
 
-        if sg_id:
-            _try(f"SG {sg_id}", ec2.delete_security_group, GroupId=sg_id)
+    rtb_id    = resources.get("rtb_id")
+    subnet_id = resources.get("subnet_id")
+    igw_id    = resources.get("igw_id")
+    vpc_id    = resources.get("vpc_id")
 
-        if rtb_id:
-            try:
-                d = ec2.describe_route_tables(RouteTableIds=[rtb_id])
-                for assoc in d["RouteTables"][0].get("Associations", []):
-                    if not assoc.get("Main"):
-                        _try(
-                            f"RTB association {assoc['RouteTableAssociationId']}",
-                            ec2.disassociate_route_table,
-                            AssociationId=assoc["RouteTableAssociationId"],
-                        )
-            except Exception:
-                pass
-            _try(f"route table {rtb_id}", ec2.delete_route_table, RouteTableId=rtb_id)
+    if rtb_id:
+        try:
+            for assoc in ec2.describe_route_tables(RouteTableIds=[rtb_id])[
+                    "RouteTables"][0].get("Associations", []):
+                if not assoc.get("Main"):
+                    _try(
+                        f"RTB assoc {assoc['RouteTableAssociationId']}",
+                        ec2.disassociate_route_table,
+                        AssociationId=assoc["RouteTableAssociationId"],
+                    )
+        except Exception:
+            pass
+        _try(f"route table {rtb_id}", ec2.delete_route_table, RouteTableId=rtb_id)
 
-        if subnet_id:
-            _try(f"subnet {subnet_id}", ec2.delete_subnet, SubnetId=subnet_id)
+    if subnet_id:
+        _try(f"subnet {subnet_id}", ec2.delete_subnet, SubnetId=subnet_id)
 
-        if igw_id and vpc_id:
-            _try(
-                f"IGW attachment {igw_id}",
-                ec2.detach_internet_gateway,
-                InternetGatewayId=igw_id, VpcId=vpc_id,
-            )
-        if igw_id:
-            _try(f"IGW {igw_id}", ec2.delete_internet_gateway, InternetGatewayId=igw_id)
+    if igw_id and vpc_id:
+        _try(f"IGW attachment {igw_id}", ec2.detach_internet_gateway,
+             InternetGatewayId=igw_id, VpcId=vpc_id)
+    if igw_id:
+        _try(f"IGW {igw_id}", ec2.delete_internet_gateway, InternetGatewayId=igw_id)
 
-        if vpc_id:
-            _try(f"VPC {vpc_id}", ec2.delete_vpc, VpcId=vpc_id)
+    if vpc_id:
+        _try(f"VPC {vpc_id}", ec2.delete_vpc, VpcId=vpc_id)
 
-    # ── Key pair ───────────────────────────────────────────────────────────────
-    key_name = resources.get("key_name")
-    if key_name:
+    if key_name := resources.get("key_name"):
         _try(f"key pair {key_name}", ec2.delete_key_pair, KeyName=key_name)
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main() -> int:
-    """Create two VPCs with one VM each, run 4 traffic sub-tests, clean up."""
-    parser = argparse.ArgumentParser(
-        description="zCompute TrafficFlowCheck replacement (guestnet-admin-tool)"
-    )
-    parser.add_argument(
-        "--region",
-        default=os.environ.get("AWS_REGION", "symphony"),
-        help="AWS region (default: symphony)",
-    )
+    parser = argparse.ArgumentParser(description="zCompute TrafficFlowCheck (SSH-based)")
+    parser.add_argument("--region", default=os.environ.get("AWS_REGION", "symphony"))
     args = parser.parse_args()
 
     ec2 = get_client("ec2", region=args.region)
@@ -926,113 +542,79 @@ def main() -> int:
         },
     }
 
-    # Accumulate resource IDs for cleanup; organised so cleanup can iterate
-    # VPC stacks uniformly.
     resources: dict[str, Any] = {
-        "instance_ids": [],
+        "instance_ids":       [],
         "eip_allocation_ids": [],
-        "vpcs": [],         # list of vpc-stack dicts {vpc_id, subnet_id, sg_id, igw_id, rtb_id}
-        "key_name": None,
+        "sg_ids":             [],
     }
 
     try:
-        # ── Step 1: Create two independent VPCs ──────────────────────────────
-        print(f"[net-flow] creating VPC-A and VPC-B (run_tag={_RUN_TAG}) ...", file=sys.stderr)
+        # ── Step 1: Network ───────────────────────────────────────────────────
+        print(f"[net-flow] creating network (run_tag={_RUN_TAG}) ...", file=sys.stderr)
+        net = _create_network(ec2)
+        resources.update({
+            "vpc_id":    net["vpc_id"],
+            "subnet_id": net["subnet_id"],
+            "igw_id":    net["igw_id"],
+            "rtb_id":    net["rtb_id"],
+        })
 
-        net_a = _create_vpc_stack(ec2, "a", _VPC_A_CIDR, _VPC_A_SUBNET)
-        resources["vpcs"].append(net_a)
+        # ── Step 2: Security groups ───────────────────────────────────────────
+        sgs = _create_security_groups(ec2, net["vpc_id"])
+        resources["sg_ids"] = [sgs["sg_source"], sgs["sg_allow"], sgs["sg_deny"]]
 
-        net_b = _create_vpc_stack(ec2, "b", _VPC_B_CIDR, _VPC_B_SUBNET)
-        resources["vpcs"].append(net_b)
-
-        # ── Step 2: Launch one VM in each VPC ─────────────────────────────────
-        print("[net-flow] launching VM-A in VPC-A ...", file=sys.stderr)
-        vm_a = _launch_vm(ec2, net_a["subnet_id"], net_a["sg_id"],
-                          f"isv-net-flow-vma-{_RUN_TAG}")
-        resources["instance_ids"].append(vm_a["instance_id"])
-        resources["eip_allocation_ids"].append(vm_a["eip_allocation_id"])
-        resources["key_name"] = vm_a["key_name"]
-
-        print("[net-flow] launching VM-B in VPC-B ...", file=sys.stderr)
-        vm_b = _launch_vm(ec2, net_b["subnet_id"], net_b["sg_id"],
-                          f"isv-net-flow-vmb-{_RUN_TAG}")
-        resources["instance_ids"].append(vm_b["instance_id"])
-        resources["eip_allocation_ids"].append(vm_b["eip_allocation_id"])
-
-        # ── Step 3: Wait for SSH on VM-A ─────────────────────────────────────
-        # SSH readiness confirms DHCP is complete and the VM's network stack
-        # is fully initialized. All sub-tests require SSH into VM-A.
-        import socket as _socket_flow
-        vm_a_key_file = f"/tmp/{vm_a['key_name']}.pem"
-        print(f"[net-flow] waiting for SSH on VM-A ({vm_a['public_ip']}) ...", file=sys.stderr)
-        _ssh_deadline = time.monotonic() + 300
-        while time.monotonic() < _ssh_deadline:
-            try:
-                with _socket_flow.create_connection((vm_a["public_ip"], 22), timeout=5):
-                    print("[net-flow] SSH ready on VM-A", file=sys.stderr)
-                    break
-            except OSError:
-                time.sleep(10)
-
-        # Derive VM-A's gateway IP from the subnet (first usable IP, e.g. 10.85.1.1)
-        vm_a_gw = vm_a["private_ip"].rsplit(".", 1)[0] + ".1"
-
-        # ── Step 4: Run sub-tests ─────────────────────────────────────────────
-        # Each sub-test is wrapped individually so one failure does not abort others.
-
-        # -- traffic_allowed --------------------------------------------------
-        # SSH into VM-A, ping the VPC gateway — confirms internal L3 connectivity.
-        print("[net-flow] running traffic_allowed test (SSH → ping gateway) ...", file=sys.stderr)
-        try:
-            result["tests"]["traffic_allowed"] = _test_traffic_allowed(
-                vm_a["public_ip"], vm_a_key_file, vm_a_gw
-            )
-        except Exception as exc:
-            result["tests"]["traffic_allowed"] = {"passed": False, "error": str(exc)}
-
-        # -- traffic_blocked --------------------------------------------------
-        # SSH into VM-A, try to ping VM-B's private IP (in different VPC).
-        # Should fail — confirms L3 isolation between VPCs.
-        print("[net-flow] running traffic_blocked test (SSH → ping cross-VPC IP) ...", file=sys.stderr)
-        try:
-            result["tests"]["traffic_blocked"] = _test_traffic_blocked(
-                vm_a["public_ip"], vm_a_key_file, vm_b["private_ip"]
-            )
-        except Exception as exc:
-            result["tests"]["traffic_blocked"] = {"passed": False, "error": str(exc)}
-
-        # -- internet_icmp ----------------------------------------------------
-        # SSH into VM-A and ping 8.8.8.8 — VM has EIP + IGW so real internet access.
-        print("[net-flow] running internet_icmp test (SSH + ping 8.8.8.8) ...", file=sys.stderr)
-        try:
-            result["tests"]["internet_icmp"] = _test_internet_icmp(
-                vm_a["public_ip"], vm_a_key_file
-            )
-        except Exception as exc:
-            result["tests"]["internet_icmp"] = {"passed": False, "error": str(exc)}
-
-        # -- internet_http ----------------------------------------------------
-        # SSH into VM-A and curl https://google.com — confirms full internet HTTP/S.
-        print("[net-flow] running internet_http test (SSH + curl google.com) ...", file=sys.stderr)
-        try:
-            result["tests"]["internet_http"] = _test_internet_http(
-                vm_a["public_ip"], vm_a_key_file
-            )
-        except Exception as exc:
-            result["tests"]["internet_http"] = {"passed": False, "error": str(exc)}
-
-        # ── Step 5: Overall success ───────────────────────────────────────────
-        result["success"] = all(
-            t.get("passed", False) for t in result["tests"].values()
+        # ── Step 3: Launch 3 VMs ──────────────────────────────────────────────
+        # Only source needs an EIP; targets are pinged on their private IPs.
+        print("[net-flow] launching source VM ...", file=sys.stderr)
+        vm_source = _launch_vm(
+            ec2, net["subnet_id"], sgs["sg_source"],
+            f"isv-net-flow-source-{_RUN_TAG}", assign_eip=True,
         )
+        resources["instance_ids"].append(vm_source["instance_id"])
+        resources["eip_allocation_ids"].append(vm_source["eip_allocation_id"])
+        resources["key_name"] = vm_source["key_name"]
+
+        print("[net-flow] launching target_allow VM ...", file=sys.stderr)
+        vm_allow = _launch_vm(
+            ec2, net["subnet_id"], sgs["sg_allow"],
+            f"isv-net-flow-allow-{_RUN_TAG}", assign_eip=False,
+        )
+        resources["instance_ids"].append(vm_allow["instance_id"])
+
+        print("[net-flow] launching target_deny VM ...", file=sys.stderr)
+        vm_deny = _launch_vm(
+            ec2, net["subnet_id"], sgs["sg_deny"],
+            f"isv-net-flow-deny-{_RUN_TAG}", assign_eip=False,
+        )
+        resources["instance_ids"].append(vm_deny["instance_id"])
+
+        # ── Step 4: Wait for SSH on source ────────────────────────────────────
+        key_file = f"/tmp/{vm_source['key_name']}.pem"
+        _wait_ssh(vm_source["public_ip"])
+
+        # ── Step 5: Sub-tests ─────────────────────────────────────────────────
+        for label, fn, target in [
+            ("traffic_allowed", _test_traffic_allowed, vm_allow["private_ip"]),
+            ("traffic_blocked", _test_traffic_blocked, vm_deny["private_ip"]),
+            ("internet_icmp",   _test_internet_icmp,   None),
+            ("internet_http",   _test_internet_http,   None),
+        ]:
+            try:
+                if target is not None:
+                    result["tests"][label] = fn(vm_source["public_ip"], key_file, target)
+                else:
+                    result["tests"][label] = fn(vm_source["public_ip"], key_file)
+            except Exception as exc:
+                result["tests"][label] = {"passed": False, "error": str(exc)}
+
+        result["success"] = all(t.get("passed", False) for t in result["tests"].values())
 
     except Exception as exc:
         result["error"] = str(exc)
         print(f"[net-flow] FATAL: {exc}", file=sys.stderr)
 
     finally:
-        # ── Step 6: Cleanup (always, never raises) ────────────────────────────
-        print("[net-flow] cleaning up resources ...", file=sys.stderr)
+        print("[net-flow] cleaning up ...", file=sys.stderr)
         _cleanup(ec2, resources)
 
     print(json.dumps(result, indent=2))
