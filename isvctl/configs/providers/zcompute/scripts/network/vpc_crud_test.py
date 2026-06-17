@@ -121,22 +121,36 @@ def test_update_dns(ec2: Any, vpc_id: str) -> dict[str, Any]:
     return result
 
 
-def test_delete_vpc(ec2: Any, vpc_id: str) -> dict[str, Any]:
+def test_delete_vpc(ec2: Any, vpc_id: str, timeout: int = 120, interval: int = 10) -> dict[str, Any]:
+    """Delete VPC, retrying if zCompute is still provisioning its internal service VM."""
     result: dict[str, Any] = {"passed": False}
-    try:
-        ec2.delete_vpc(VpcId=vpc_id)
-        time.sleep(2)
+    deadline = time.monotonic() + timeout
+    last_error = ""
+    while time.monotonic() < deadline:
         try:
-            ec2.describe_vpcs(VpcIds=[vpc_id])
-            result["error"] = "VPC still exists after deletion"
+            ec2.delete_vpc(VpcId=vpc_id)
+            # Confirm deletion
+            time.sleep(2)
+            try:
+                ec2.describe_vpcs(VpcIds=[vpc_id])
+                result["error"] = "VPC still exists after deletion"
+            except ClientError as e:
+                if "InvalidVpcID.NotFound" in str(e) or "InvalidVpc.NotFound" in str(e):
+                    result["passed"] = True
+                    result["message"] = f"VPC {vpc_id} deleted successfully"
+                else:
+                    result["error"] = str(e)
+            return result
         except ClientError as e:
-            if "InvalidVpcID.NotFound" in str(e) or "InvalidVpc.NotFound" in str(e):
-                result["passed"] = True
-                result["message"] = f"VPC {vpc_id} deleted successfully"
-            else:
-                result["error"] = str(e)
-    except ClientError as e:
-        result["error"] = str(e)
+            last_error = str(e)
+            if "service VM is being provisioned" in last_error:
+                print(f"[vpc-crud] VPC {vpc_id} service VM still provisioning, retrying in {interval}s ...",
+                      file=sys.stderr)
+                time.sleep(interval)
+                continue
+            result["error"] = last_error
+            return result
+    result["error"] = f"Timed out waiting to delete VPC {vpc_id}: {last_error}"
     return result
 
 

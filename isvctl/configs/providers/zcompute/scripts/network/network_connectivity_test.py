@@ -13,9 +13,6 @@ What NVIDIA's original test does (SSM-based):
 
 Usage:
     python3 network_connectivity_test.py --region symphony
-
-Usage:
-    python3 network_connectivity_test.py --region symphony
 """
 
 from __future__ import annotations
@@ -50,61 +47,7 @@ _VPC_CIDR = "10.83.0.0/16"
 _SUBNET_CIDR = "10.83.1.0/24"
 
 # How long to wait for a VM to reach 'running' state (seconds).
-_VM_LAUNCH_TIMEOUT = 600
-
-# How long to poll guestnet-admin-tool for a ping result (seconds).
-_PING_POLL_TIMEOUT = 90
-_PING_POLL_INTERVAL = 3
-
-
-# ── symp CLI helper ───────────────────────────────────────────────────────────
-
-def _symp_cmd(args: list[str], timeout: int = 30) -> Any:
-    """Run a symp CLI command via the symp_docker container and return parsed JSON.
-
-    All symp calls go through 'sudo docker exec <container> symp -q -k ...',
-    matching the pattern used by backend_switch_fabric_test.py.
-
-    We pass '-f json' as the last argument so symp always returns machine-
-    readable output rather than the human-friendly table format.
-
-    Args:
-        args:    symp subcommand + arguments (without auth flags or -f json).
-        timeout: subprocess timeout in seconds.
-
-    Returns:
-        Parsed JSON — either a list or a dict depending on the command.
-
-    Raises:
-        RuntimeError: If the subprocess exits non-zero.
-        json.JSONDecodeError: If symp output is not valid JSON.
-    """
-    import subprocess
-
-    url = os.environ.get("ZCOMPUTE_SYMP_URL", "http://172.29.0.20")
-    user = os.environ.get("ZCOMPUTE_SYMP_USER", "admin")
-    domain = os.environ.get("ZCOMPUTE_SYMP_DOMAIN", "cloud_admin")
-    password = os.environ.get("ZCOMPUTE_SYMP_PASSWORD", "admin")
-    project = os.environ.get("ZCOMPUTE_SYMP_PROJECT", "default")
-    container = os.environ.get("ZCOMPUTE_SYMP_CONTAINER", "symp_docker")
-
-    cmd = [
-        "sudo", "docker", "exec", container,
-        "symp", "-q", "-k",
-        "--username", user,
-        "--domain", domain,
-        "--password", password,
-        "--project", project,
-        "--url", url,
-    ] + args + ["-f", "json"]
-
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"symp command failed (rc={proc.returncode}): "
-            f"{proc.stderr.strip() or proc.stdout.strip()}"
-        )
-    return json.loads(proc.stdout)
+_VM_LAUNCH_TIMEOUT = 300
 
 
 # ── VPC / subnet / SG creation ───────────────────────────────────────────────
@@ -227,18 +170,15 @@ def _create_network(ec2: Any) -> dict[str, str]:
               {"Key": "RunTag", "Value": tag_suffix}],
     )
 
-    # Allow ICMP from anywhere (needed for arping to reach the VMs) and SSH.
     ec2.authorize_security_group_ingress(
         GroupId=sg_id,
         IpPermissions=[
-            # ICMP (all types) — guestnet-admin-tool arping needs this
             {
                 "IpProtocol": "icmp",
                 "FromPort": -1,
                 "ToPort": -1,
-                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "ICMP for arping"}],
+                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "ICMP"}],
             },
-            # SSH — optional, useful for debugging
             {
                 "IpProtocol": "tcp",
                 "FromPort": 22,
@@ -355,15 +295,12 @@ def _launch_vm(ec2: Any, subnet_id: str, sg_id: str, name: str) -> dict[str, Any
 
     print(f"[net-conn] instance {instance_id} launched for '{name}'", file=sys.stderr)
 
-    # ── Poll for running state ────────────────────────────────────────────────
-    # zCompute occasionally puts instances into 'shutoff' instead of 'running'.
-    # Detect this and call start_instances to recover.
+    # ── Poll for running state (5 min timeout, no recovery) ──────────────────
     deadline = time.monotonic() + _VM_LAUNCH_TIMEOUT
     state = "pending"
     while time.monotonic() < deadline:
         try:
             desc = ec2.describe_instances(InstanceIds=[instance_id])
-            # post-filter in Python because zCompute may return all instances
             matching = [
                 i
                 for r in desc.get("Reservations", [])
@@ -380,17 +317,8 @@ def _launch_vm(ec2: Any, subnet_id: str, sg_id: str, name: str) -> dict[str, Any
         if state == "running":
             print(f"[net-conn] {instance_id} is running", file=sys.stderr)
             break
-        elif state in ("shutoff", "stopped"):
-            # zCompute scheduling quirk: instance parked in shutoff.
-            # Send start command and continue polling.
-            print(
-                f"[net-conn] {instance_id} in {state} — sending start_instances ...",
-                file=sys.stderr,
-            )
-            try:
-                ec2.start_instances(InstanceIds=[instance_id])
-            except Exception as exc:
-                print(f"[net-conn] start_instances failed (non-fatal): {exc}", file=sys.stderr)
+        elif state in ("error", "terminated"):
+            raise RuntimeError(f"Instance {instance_id} entered unexpected state: {state}")
         else:
             print(f"[net-conn] {instance_id} state={state}, waiting ...", file=sys.stderr)
 
@@ -466,125 +394,6 @@ def _find_instance_by_name(
         time.sleep(10)
 
     raise RuntimeError(f"Could not find instance with Name='{name}' after {timeout}s")
-
-
-# ── zCompute UUID translation ─────────────────────────────────────────────────
-
-def _get_zcompute_vm_uuid(vm_name: str) -> str | None:
-    """Translate an EC2 Name-tag to the internal zCompute VM UUID.
-
-    guestnet-admin-tool ping-vm requires the internal zCompute UUID, not
-    the EC2 instance ID (i-xxx). We get it by calling 'symp vm list -f json',
-    which returns objects with 'id' (UUID) and 'name' fields.
-
-    We match on 'name' because that is what zCompute surfaces from the EC2
-    Name tag in the EC2-compatible API.
-
-    Args:
-        vm_name: The Name tag value set on the EC2 instance.
-
-    Returns:
-        zCompute UUID string, or None if not found.
-    """
-    try:
-        vms = _symp_cmd(["vm", "list"], timeout=30)
-        # vms is a list of dicts; each has 'id' and 'name'
-        for vm in vms:
-            if vm.get("name") == vm_name:
-                return vm.get("id")
-        print(
-            f"[net-conn] WARNING: could not find zCompute UUID for VM '{vm_name}'",
-            file=sys.stderr,
-        )
-        return None
-    except Exception as exc:
-        print(f"[net-conn] WARNING: symp vm list failed: {exc}", file=sys.stderr)
-        return None
-
-
-# ── guestnet-admin-tool ping ─────────────────────────────────────────────────
-
-def _ping_vm(zcompute_uuid: str) -> dict[str, Any]:
-    """Arping a VM from its DHCP server using guestnet-admin-tool.
-
-    arping works at Layer 2 (ARP-level) and bypasses tenant security groups
-    entirely — it originates from the DHCP server on the management plane,
-    not from another tenant VM. This makes it the ideal connectivity check
-    for zCompute where SSM is unavailable.
-
-    Flow:
-      1. POST: ping-vm create --command-type arping <uuid>  → returns {"id": ..., "status": "pending"}
-      2. GET: ping-vm get <ping-id>  → poll until status != "pending"
-
-    A result of status=="succeeded" AND "Received" in output means the VM is
-    live and the DHCP/L2 fabric is healthy.
-
-    Args:
-        zcompute_uuid: Internal zCompute VM UUID.
-
-    Returns:
-        Dict with keys: passed (bool), status (str), output (str), error (str or None).
-    """
-    result: dict[str, Any] = {"passed": False, "status": "unknown", "output": "", "error": None}
-
-    try:
-        # ── Step 1: Create the ping job ───────────────────────────────────────
-        create_resp = _symp_cmd(
-            ["guestnet-admin-tool", "ping-vm", "create",
-             "--command-type", "arping",
-             zcompute_uuid],
-            timeout=15,
-        )
-        ping_id = create_resp.get("id")
-        if not ping_id:
-            result["error"] = f"ping-vm create returned no 'id': {create_resp}"
-            return result
-
-        print(
-            f"[net-conn] ping-vm job {ping_id} created for {zcompute_uuid}, polling ...",
-            file=sys.stderr,
-        )
-
-        # ── Step 2: Poll until the job leaves 'pending' ───────────────────────
-        deadline = time.monotonic() + _PING_POLL_TIMEOUT
-        ping_status = "pending"
-        ping_output = ""
-
-        while time.monotonic() < deadline:
-            get_resp = _symp_cmd(
-                ["guestnet-admin-tool", "ping-vm", "get", ping_id],
-                timeout=15,
-            )
-            ping_status = get_resp.get("status", "unknown")
-            ping_output = get_resp.get("output", "")
-
-            if ping_status != "pending":
-                break
-            time.sleep(_PING_POLL_INTERVAL)
-        else:
-            # Timed out while still pending — treat as a failed ping.
-            result["error"] = f"ping-vm job {ping_id} still pending after {_PING_POLL_TIMEOUT}s"
-            result["status"] = "timeout"
-            return result
-
-        result["status"] = ping_status
-        result["output"] = ping_output
-
-        # ── Determine success ─────────────────────────────────────────────────
-        # status=="succeeded" alone is the primary indicator; we also check that
-        # the arping output contains "Received" to guard against a spurious success
-        # response from the API (has not been observed, but is cheap to verify).
-        if ping_status == "succeeded" and "Received" in ping_output:
-            result["passed"] = True
-        else:
-            result["error"] = (
-                f"ping-vm status={ping_status!r}, output={ping_output!r}"
-            )
-
-    except Exception as exc:
-        result["error"] = str(exc)
-
-    return result
 
 
 # ── Resource cleanup ──────────────────────────────────────────────────────────
@@ -697,7 +506,7 @@ def _cleanup(ec2: Any, resources: dict[str, Any]) -> None:
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main() -> int:
-    """Create VMs, ping them via guestnet-admin-tool, clean up, output JSON."""
+    """Create VMs, ping them via SSH, clean up, output JSON."""
     parser = argparse.ArgumentParser(
         description="zCompute NetworkConnectivityCheck replacement (guestnet-admin-tool)"
     )
@@ -758,29 +567,7 @@ def main() -> int:
             {"private_ip": vm2["private_ip"], "public_ip": vm2["public_ip"]},
         ]
 
-        # ── Step 3: Translate EC2 instance IDs → zCompute internal UUIDs ──────
-        # guestnet-admin-tool ping-vm operates on the internal zCompute UUID, not
-        # the EC2 instance ID.  We match on the Name tag we set at launch.
-        vm1_uuid = _get_zcompute_vm_uuid(f"isv-net-conn-vm1-{_RUN_TAG}")
-        vm2_uuid = _get_zcompute_vm_uuid(f"isv-net-conn-vm2-{_RUN_TAG}")
-
-        if not vm1_uuid:
-            result["tests"]["vm1_reachable"] = {
-                "passed": False,
-                "error": "Could not resolve zCompute UUID for VM1",
-            }
-        if not vm2_uuid:
-            result["tests"]["vm2_reachable"] = {
-                "passed": False,
-                "error": "Could not resolve zCompute UUID for VM2",
-            }
-
-        # ── Step 4: Test connectivity via SSH + in-guest ping ────────────────
-        # SSH into each VM and verify L3 connectivity between them.
-        # guestnet-admin-tool ping-vm only works for management-network VMs,
-        # not for tenant VPC VMs created via the EC2 API. In-guest ping is the
-        # correct approach and mirrors exactly what NVIDIA's SSM-based test does:
-        # run a connectivity probe from inside the instance.
+        # ── Step 3: Test connectivity via SSH + in-guest ping ────────────────
         key_file = f"/tmp/{vm1['key_name']}.pem"
         import socket as _socket
         import paramiko as _paramiko
@@ -823,7 +610,7 @@ def main() -> int:
             "VM2", vm2["public_ip"], vm1["private_ip"]
         )
 
-        # ── Step 5: Overall success ────────────────────────────────────────────
+        # ── Step 4: Overall success ────────────────────────────────────────────
         result["success"] = all(
             t.get("passed", False) for t in result["tests"].values()
         )
@@ -833,7 +620,7 @@ def main() -> int:
         print(f"[net-conn] FATAL: {exc}", file=sys.stderr)
 
     finally:
-        # ── Step 6: Cleanup (always runs, never raises) ────────────────────────
+        # ── Step 5: Cleanup (always runs, never raises) ────────────────────────
         print("[net-conn] cleaning up resources ...", file=sys.stderr)
         _cleanup(ec2, resources)
 
