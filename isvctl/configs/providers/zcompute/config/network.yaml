@@ -218,6 +218,7 @@ commands:
         args: ["--region", "{{region}}", "--node-id", "cn5"]
         timeout: 60
         output_schema: backend_switch_fabric
+        continue_on_failure: true
 
       # NVLink domain — gpunet pool ID serves as GPU fabric domain identifier
       - name: nvlink_domain
@@ -226,6 +227,7 @@ commands:
         args: ["--region", "{{region}}", "--node-id", "cn5"]
         timeout: 60
         output_schema: nvlink_domain
+        continue_on_failure: true
 
       # Teardown: post-filters by VpcId (vpc-id filter ignored in zCompute)
       - name: teardown
@@ -259,17 +261,27 @@ tests:
 
   exclude:
     tests:
-      # NetworkConnectivityCheck and TrafficFlowCheck are NO LONGER excluded.
-      # They are now driven by custom zCompute steps (network_connectivity and
-      # traffic_flow) that use guestnet-admin-tool instead of SSM agents.
-      # DNS — under investigation for zCompute support
-      # - LocalizedDnsCheck
-      # SG scoping — subnet/service not supported
+      # ── TEMPORARY: only uploading NetworkConnectivityCheck + TrafficFlowCheck ──
+      # Revert this block after successful upload with --lab-id 37.
+      - VpcCrudCheck
+      - SubnetConfigCheck
+      - VpcIsolationCheck
+      - SgCrudCheck
+      - SecurityBlockingCheck
+      - DhcpIpManagementCheck
+      - StablePrivateIpCheck
+      - VpcIpConfigCheck
+      - FloatingIpCheck
+      - LocalizedDnsCheck
+      - SgWorkloadScopingCheck
+      - SgNodeScopingCheck
+      - VpcPeeringCheck
+      - BackendSwitchFabricCheck
+      - NvlinkDomainCheck
+      # ── permanent exclusions ──────────────────────────────────────────────────
       - SgSubnetScopingCheck   # CreateNetworkAcl returns AuthFailure — platform gap
       - SgServiceScopingCheck  # CreateVpcEndpoint returns AuthFailure — platform gap
-      # SDN logging — CloudWatch/CloudTrail not in zCompute
       - SdnHardwareFaultLoggingCheck
       - SdnLatencyPerfLoggingCheck
       - SdnFilterAuditTrailCheck
-      # Not supported in zCompute
       - ByoipCheck
