@@ -207,10 +207,11 @@ commands:
         output_schema: nvlink_domain
         continue_on_failure: true
 
-      # Teardown: post-filters by VpcId (vpc-id filter ignored in zCompute)
+      # Teardown: zCompute-specific version handles "already deleting" VPC state
+      # and uses poll loop instead of boto3 waiters for instance termination.
       - name: teardown
         phase: teardown
-        command: "python3 ../scripts/network/ssl_wrapper.py ../../aws/scripts/network/teardown.py"
+        command: "python3 ../scripts/network/teardown.py"
         args:
           - "--vpc-id"
           - "{{steps.create_network.network_id}}"
