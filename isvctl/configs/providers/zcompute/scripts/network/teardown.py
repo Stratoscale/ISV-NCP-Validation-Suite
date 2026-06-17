@@ -28,8 +28,7 @@ from botocore.exceptions import ClientError
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _here = __import__("pathlib").Path(__file__).resolve()
-sys.path.insert(0, str(_here.parents[1]))   # zcompute/scripts
-sys.path.insert(0, str(_here.parents[3] / "aws" / "scripts"))  # aws/scripts
+sys.path.insert(0, str(_here.parents[1]))  # zcompute/scripts (has common/client.py)
 
 from common.client import get_client  # zcompute client (verify=False)
 
