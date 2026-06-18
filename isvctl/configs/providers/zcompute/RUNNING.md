@@ -24,7 +24,7 @@ uv sync
 
 ## Credentials file
 
-Create `~/suite-zcompute.env` (outside the repo, gitignored) and source it before every run. The file has two sections: a base block shared by all suites, and suite-specific blocks below.
+Create `~/suite-zcompute.env` and source it before every run.
 
 ```bash
 source ~/suite-zcompute.env
@@ -253,23 +253,3 @@ Test results uploaded successfully
 ```
 
 ---
-
-## Useful CLI Options
-
-| Flag | Description |
-|------|-------------|
-| `--lab-id <N>` | Upload results to NVIDIA portal after run |
-| `--phase setup\|test\|teardown` | Run only one phase |
-| `-v` | Verbose output |
-| `2>&1 \| tee /tmp/run.log` | Save full output to a log file |
-
----
-
-## Cleaning Up Stale Resources
-
-If a run fails midway, resources may be left in your zCompute project. Clean them up with:
-
-```bash
-cd isvctl/configs/providers/zcompute/config
-python3 ../scripts/network/cleanup_stale_resources.py
-```
