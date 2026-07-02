@@ -13,7 +13,7 @@
 # CNI:          Cilium
 #
 # Usage:
-#   export KUBECONFIG=path/to/config-eksd-nkqa11
+#   export KUBECONFIG=path/to/config-eksd-<cluster-name>
 #   export PYTHONPATH=isvctl/src:isvtest/src:isvreporter/src
 #   uv run isvctl test run -f isvctl/configs/providers/zcompute/config/k8s.yaml -v
 #

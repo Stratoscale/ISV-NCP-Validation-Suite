@@ -7,13 +7,13 @@
 #   SEC07-01: MfaEnforcedCheck                 — cluster-level MFA enforcement enabled
 #   SEC03-01: ServiceAccountCredentialCheck    — IAM service account credentials work
 #
-# Excluded — confirmed platform gaps (per Ofir Amir, Head of R&D):
+# Excluded — confirmed platform gaps:
 #   BMC checks (4)     — zCompute is a VM cloud, no BMC/IPMI/Redfish layer
 #   CustomerManagedKeyCheck — no KMS API; certificate management exists for LB only
 #   OidcUserAuthCheck  — only SAML via Okta supported, OIDC not implemented
 #
 # Usage:
-#   export ZCOMPUTE_BASE_URL=https://172.29.0.20
+#   export ZCOMPUTE_BASE_URL=https://<zcompute-ip>
 #   export AWS_ACCESS_KEY_ID=<key>
 #   export AWS_SECRET_ACCESS_KEY=<secret>
 #   export AWS_REGION=symphony
@@ -73,7 +73,7 @@ tests:
       - BmcTenantIsolationCheck
       - BmcProtocolSecurityCheck
       - BmcBastionAccessCheck
-      # KMS/BYOK API not available — certificate management exists for LB only (Ofir confirmed)
+      # KMS/BYOK API not available — certificate management exists for LB only
       - CustomerManagedKeyCheck
-      # OIDC not implemented — only SAML via Okta supported (Ofir confirmed)
+      # OIDC not implemented — only SAML via Okta supported
       - OidcUserAuthCheck

@@ -11,11 +11,11 @@ default). The gpunet pool ID identifies the logical NVLink/GPU network domain
 at the infrastructure level.
 
 Environment variables (all have defaults):
-  ZCOMPUTE_SYMP_URL       symp endpoint, default http://172.29.0.20
-  ZCOMPUTE_SYMP_USER      default admin
-  ZCOMPUTE_SYMP_DOMAIN    default cloud_admin
-  ZCOMPUTE_SYMP_PASSWORD  default admin
-  ZCOMPUTE_SYMP_PROJECT   default default
+  ZCOMPUTE_SYMP_URL       symp endpoint (falls back to ZCOMPUTE_BASE_URL)
+  ZCOMPUTE_SYMP_USER      symp username
+  ZCOMPUTE_SYMP_DOMAIN    symp domain
+  ZCOMPUTE_SYMP_PASSWORD  symp password
+  ZCOMPUTE_SYMP_PROJECT   symp project (default: default)
 
 Usage:
     python nvlink_domain_test.py --region symphony --node-id cn5
@@ -31,7 +31,7 @@ from typing import Any
 
 def symp_cmd(args: list[str], timeout: int = 30) -> list[Any]:
     """Run a symp CLI command via the symp_docker container and return parsed JSON."""
-    url = os.environ.get("ZCOMPUTE_SYMP_URL", "http://172.29.0.20")
+    url = os.environ.get("ZCOMPUTE_SYMP_URL") or os.environ.get("ZCOMPUTE_BASE_URL", "")
     user = os.environ.get("ZCOMPUTE_SYMP_USER", "admin")
     domain = os.environ.get("ZCOMPUTE_SYMP_DOMAIN", "cloud_admin")
     password = os.environ.get("ZCOMPUTE_SYMP_PASSWORD", "admin")

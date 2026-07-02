@@ -1,10 +1,10 @@
 # zCompute × NVIDIA NCP Validation Suite — Compatibility Report
 
 **Last updated:** 2026-05-20
-**Author:** Amit Orenshtein, Zadara Storage
+**Author:** Zadara Team
 **Suite version:** NVIDIA ISV-NCP-Validation-Suite (experimental preview)
 **zCompute clusters under test:**
-- `172.29.0.20` — HGX GPU cluster (primary certification target)
+- `<zcompute-ip>` — HGX GPU cluster (primary certification target)
 
 ---
 
@@ -23,7 +23,7 @@ work lives in `providers/zcompute/`.
 ## zCompute API Endpoints
 
 ```
-https://172.29.0.20/api/v2/aws/<service>/
+https://<zcompute-ip>/api/v2/aws/<service>/
 ```
 
 | Service | Endpoint | Status |
@@ -75,7 +75,7 @@ botocore URLLib3Session patch.
 
 | Service | Operation | Error | Impact |
 |---------|-----------|-------|--------|
-| IAM | `UpdateAccessKey` | `NotImplementedException` | **CRITICAL** — cannot disable keys. Ticket NK-19406 |
+| IAM | `UpdateAccessKey` | `NotImplementedException` | **CRITICAL** — cannot disable keys (known platform limitation) |
 | IAM | `ListUserPolicies` | `AuthFailure` | Skipped — no inline policies on test users |
 | EC2 | `GetConsoleOutput` | `500 InternalFailure` | Serial console not available |
 | EC2 | `DescribeNetworkAcls` / `CreateNetworkAcl` | `AuthFailure` | **CRITICAL** — NACLs not supported, SG-only model |
@@ -92,7 +92,7 @@ botocore URLLib3Session patch.
 |-------|--------|-------|
 | API Health (STS/EC2/IAM) | ✅ | |
 | AccessKeyCreatedCheck / TenantCreatedCheck / AuthenticatedCheck | ✅ | |
-| AccessKeyDisabledCheck | ❌ BLOCKED | `UpdateAccessKey` not implemented — ticket NK-19406 |
+| AccessKeyDisabledCheck | ❌ BLOCKED | `UpdateAccessKey` not implemented (known platform limitation) |
 | AccessKeyRejectedCheck | ⛔ EXCLUDED | Depends on disable |
 | TenantListedCheck / TenantInfoCheck / StepSuccessCheck ×2 | ✅ | |
 
@@ -107,7 +107,7 @@ All checks passing.
 ### ⚠️ VM — PARTIAL PASS (24/24 collected, as of 2026-05-20)
 
 **Instance:** `zh1.52xlarge` (208 vCPUs, ~1.87TB RAM, 8× H100 SXM5 80GB)
-**AMI:** `ami-8269e586aa484003948818fadcbb475a` (Ubuntu 24.04 server cloudimg)
+**AMI:** `<ami-id>` (Ubuntu 24.04 server cloudimg)
 
 | Check | Result | Notes |
 |-------|--------|-------|
@@ -181,7 +181,7 @@ All 24 collected tests pass. 8 excluded pending engineering work:
 
 | # | Gap | Severity | Status |
 |---|-----|----------|--------|
-| 1 | `iam:UpdateAccessKey` not implemented | 🔴 CRITICAL | Ticket NK-19406 |
+| 1 | `iam:UpdateAccessKey` not implemented | 🔴 CRITICAL | Known platform limitation |
 | 2 | NACLs not supported (SG-only model) | 🔴 CRITICAL | Needs engineering ticket |
 | 3 | NGC API key with NIM entitlement | 🟠 HIGH | Received, testing |
 | 4 | No S3 endpoint | 🟠 HIGH | Open |
@@ -218,7 +218,7 @@ All 24 collected tests pass. 8 excluded pending engineering work:
 4. ✅ K8s — 24/24 collected, multi-node NCCL over RoCE
 5. 🔄 VM — fix GpuCheck NVML version mismatch (driver load order fix deployed)
 6. 🔄 VM/K8s NIM tests — NGC key with NIM entitlement received, testing
-7. 🔴 `iam:UpdateAccessKey` — escalate to zCompute engineering (ticket NK-19406)
+7. 🔴 `iam:UpdateAccessKey` — escalate to zCompute engineering (known platform limitation)
 8. 🔴 NACLs — file engineering ticket
 9. ⬜ OIDC configuration (K8s) — runbook ready
 10. ⬜ Calico migration (K8s NetworkPolicy) — runbook ready

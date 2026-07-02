@@ -221,7 +221,7 @@ uv run isvctl test run -f isvctl/configs/providers/zcompute/config/security.yaml
 
 ## Uploading Results to the NVIDIA Portal
 
-Add `--lab-id <N>` to any run command to upload results automatically after the suite completes. The lab ID is the numeric ID of your registered lab on the NVIDIA ISV Lab Service portal.
+Add `--lab-id <your-lab-id>` to any run command to upload results automatically after the suite completes. The lab ID is the numeric ID of your registered lab on the NVIDIA ISV Lab Service portal.
 
 You also need these credentials in your environment (provided by NVIDIA):
 
@@ -237,7 +237,7 @@ export ISV_SSA_ISSUER=<issuer-url>
 ```bash
 uv run isvctl test run \
   -f isvctl/configs/providers/zcompute/config/network.yaml \
-  --lab-id 37 \
+  --lab-id <your-lab-id> \
   2>&1 | tee /tmp/network-upload.log
 ```
 
@@ -246,7 +246,7 @@ On success, the output will show:
 ```
 Test run created successfully
   Test Run ID: <id>
-  URL: https://public-api.ncp-isv-validation-labs.nvidia.com/v1/labs/37/test-runs/<id>
+  URL: https://public-api.ncp-isv-validation-labs.nvidia.com/v1/labs/<your-lab-id>/test-runs/<id>
 ...
 Test results uploaded successfully
   Status: SUCCESS

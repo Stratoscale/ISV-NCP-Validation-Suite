@@ -16,11 +16,11 @@
 #
 # Usage:
 #   export KUBECONFIG=/path/to/kubeconfig
-#   export ZCOMPUTE_IP=172.29.0.20
+#   export ZCOMPUTE_IP=<zcompute-ip>
 #   export AWS_ACCESS_KEY_ID=<key>
 #   export AWS_SECRET_ACCESS_KEY=<secret>
-#   export HGX_NODE_1_IP=192.168.0.190   # SSH-reachable IP of first HGX worker
-#   export HGX_NODE_2_IP=192.168.0.235   # SSH-reachable IP of second HGX worker
+#   export HGX_NODE_1_IP=<node-ip>   # SSH-reachable IP of first HGX worker
+#   export HGX_NODE_2_IP=<node-ip>   # SSH-reachable IP of second HGX worker
 #   export HGX_SSH_KEY=/path/to/key.pem  # optional — use key-based auth
 #   export HGX_SSH_PASS=<password>       # optional — use password-based auth (needs sshpass)
 #   export HGX_SSH_USER=ubuntu           # optional — defaults to ubuntu
@@ -41,11 +41,11 @@ die()  { echo -e "${RED}[ FAIL ]${NC} $*" >&2; exit 1; }
 skip() { echo -e "${YELLOW}[ SKIP ]${NC} $* (already done)"; }
 
 # ── Config / defaults ─────────────────────────────────────────────────────────
-ZCOMPUTE_IP="${ZCOMPUTE_IP:-172.29.0.20}"
+ZCOMPUTE_IP="${ZCOMPUTE_IP:?Set ZCOMPUTE_IP to the zCompute API endpoint IP}"
 AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:?Set AWS_ACCESS_KEY_ID}"
 AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:?Set AWS_SECRET_ACCESS_KEY}"
-HGX_NODE_1_IP="${HGX_NODE_1_IP:-172.31.2.159}"
-HGX_NODE_2_IP="${HGX_NODE_2_IP:-172.31.1.175}"
+HGX_NODE_1_IP="${HGX_NODE_1_IP:?Set HGX_NODE_1_IP to the SSH-reachable IP of the first HGX worker}"
+HGX_NODE_2_IP="${HGX_NODE_2_IP:?Set HGX_NODE_2_IP to the SSH-reachable IP of the second HGX worker}"
 HGX_SSH_KEY="${HGX_SSH_KEY:-}"
 HGX_SSH_PASS="${HGX_SSH_PASS:-}"
 HGX_SSH_USER="${HGX_SSH_USER:-ubuntu}"

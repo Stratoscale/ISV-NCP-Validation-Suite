@@ -48,7 +48,7 @@ from common.client import get_client  # noqa: E402
 
 def symp_cmd(args: list[str], timeout: int = 60) -> Any:
     """Run a symp CLI command. Returns parsed JSON or None on error."""
-    url = os.environ.get("ZCOMPUTE_SYMP_URL", "http://172.29.0.20")
+    url = os.environ.get("ZCOMPUTE_SYMP_URL") or os.environ.get("ZCOMPUTE_BASE_URL", "")
     user = os.environ.get("ZCOMPUTE_SYMP_USER", "admin")
     domain = os.environ.get("ZCOMPUTE_SYMP_DOMAIN", "cloud_admin")
     password = os.environ.get("ZCOMPUTE_SYMP_PASSWORD", "admin")

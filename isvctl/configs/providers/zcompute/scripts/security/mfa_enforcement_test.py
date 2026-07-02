@@ -34,7 +34,7 @@ from typing import Any
 
 def _symp(args: list[str], timeout: int = 30) -> Any:
     """Run a symp CLI command via symp_docker and return parsed JSON."""
-    url = os.environ.get("ZCOMPUTE_SYMP_URL", "http://172.29.0.20")
+    url = os.environ.get("ZCOMPUTE_SYMP_URL") or os.environ.get("ZCOMPUTE_BASE_URL", "")
     container = os.environ.get("ZCOMPUTE_SYMP_CONTAINER", "symp_docker")
     cmd = [
         "sudo", "docker", "exec", container,

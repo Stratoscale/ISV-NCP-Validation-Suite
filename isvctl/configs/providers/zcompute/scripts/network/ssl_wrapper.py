@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Universal SSL wrapper for zCompute.
 
-Patches botocore to disable SSL verification (hostname mismatch between IP
-172.29.0.20 and cert *.zadara-qa.com), then exec's the target AWS script.
+Patches botocore to disable SSL verification (hostname mismatch between
+zCompute IP and cert <your-zcompute-endpoint>), then exec's the target AWS script.
 
 Usage (from network.yaml):
     python3 ../scripts/network/ssl_wrapper.py ../../aws/scripts/network/subnet_test.py [args...]
@@ -565,7 +565,7 @@ if any(t in str(target) for t in ('dhcp_ip_test', 'stable_ip_test', 'floating_ip
         raise RuntimeError(
             "ZCOMPUTE_TEST_AMI_ID is not set. "
             "Export a valid zCompute image ID before running this test "
-            "(e.g. export ZCOMPUTE_TEST_AMI_ID=ami-8269e586aa484003948818fadcbb475a)"
+            "(e.g. export ZCOMPUTE_TEST_AMI_ID=<ami-id>)"
         )
     # stable_ip / floating_ip: replace function import
     source = source.replace(

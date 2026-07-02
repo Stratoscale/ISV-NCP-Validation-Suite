@@ -35,10 +35,10 @@ def _disable_via_symp(access_key_id: str) -> dict[str, Any]:
     """Fall back to `symp access-key update <id> False` when IAM API is not implemented.
 
     Required environment variables:
-        SYMP_URL      zcompute management URL, e.g. http://172.29.0.20
-        SYMP_USER     symp username, e.g. amitor
-        SYMP_DOMAIN   symp domain, e.g. amitor
-        SYMP_PROJECT  symp project, e.g. amitor
+        SYMP_URL      zcompute management URL, e.g. https://<zcompute-ip>
+        SYMP_USER     symp username
+        SYMP_DOMAIN   symp domain
+        SYMP_PROJECT  symp project
         SYMP_PASSWORD symp password
     """
     url = os.environ.get("SYMP_URL") or os.environ.get("ZCOMPUTE_BASE_URL", "")
@@ -119,12 +119,12 @@ def main() -> int:
             symp_result = _disable_via_symp(args.access_key_id)
             result.update(symp_result)
             if not result["success"]:
-                # symp not available — known platform gap (NK-19406).
+                # symp not available — known platform gap (known platform limitation).
                 # Exit 0 so the step does not fail the orchestration.
                 # AccessKeyDisabledCheck and AccessKeyRejectedCheck are excluded in config.
                 result["platform_gap"] = True
                 result["status"] = "Inactive"
-                result["note"] = "iam:UpdateAccessKey not implemented on zCompute (NK-19406)."
+                result["note"] = "iam:UpdateAccessKey not implemented on zCompute (known platform limitation)."
                 print(json.dumps(result, indent=2))
                 return 0
         else:

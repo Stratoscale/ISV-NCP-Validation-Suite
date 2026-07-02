@@ -6,11 +6,11 @@
 #
 # Requirements:
 #   - kubectl in PATH
-#   - KUBECONFIG pointing at the EKS-D cluster (e.g. config-eksd-nkqa11)
+#   - KUBECONFIG pointing at the EKS-D cluster (e.g. config-eksd-<cluster-name>)
 #   - jq (for node name array)
 #
 # Usage:
-#   export KUBECONFIG=path/to/config-eksd-nkqa11
+#   export KUBECONFIG=path/to/config-eksd-<cluster-name>
 #   ./setup.sh
 
 set -eo pipefail

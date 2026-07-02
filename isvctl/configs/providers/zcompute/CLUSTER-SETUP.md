@@ -34,10 +34,10 @@ All steps are written to be **idempotent** — they check before acting. It is s
 Set these in your shell before running any commands in this guide:
 
 ```bash
-export ZCOMPUTE_IP=172.29.0.20               # zCompute API endpoint IP
+export ZCOMPUTE_IP=<zcompute-ip>               # zCompute API endpoint IP
 export AWS_ACCESS_KEY_ID=<your-key-id>        # zCompute EC2-compatible access key
 export AWS_SECRET_ACCESS_KEY=<your-secret>    # zCompute EC2-compatible secret
-export CLUSTER_NAME=nkqa11                    # Must match install.env CLUSTER_NAME
+export CLUSTER_NAME=<cluster-name>            # Must match install.env CLUSTER_NAME
 export PRIMARY_NIC=enp1s0                     # Primary NIC on all nodes (NOT eth0)
 export KUBECONFIG=/etc/kubernetes/admin.conf  # Or wherever kubeadm placed it
 export HGX_NODE_1_IP=<gpu-worker-0-ip>       # SSH-reachable IP
@@ -64,7 +64,7 @@ grep NET_DEVICES install.env  # confirm: NET_DEVICES="enp1s0"
 
 ```bash
 grep CLUSTER_NAME install.env
-# Expected: CLUSTER_NAME="nkqa11"  (or whatever your cluster name is)
+# Expected: CLUSTER_NAME="<cluster-name>"
 # This value becomes kubernetesclusterid in cloud.conf — must match exactly.
 ```
 
@@ -72,7 +72,7 @@ grep CLUSTER_NAME install.env
 
 ```bash
 grep ZADARA_API_DOMAIN install.env
-# Expected: ZADARA_API_DOMAIN=172.29.0.20  (matches $ZCOMPUTE_IP above)
+# Expected: ZADARA_API_DOMAIN=<zcompute-ip>  (matches $ZCOMPUTE_IP above)
 ```
 
 ---
@@ -304,12 +304,12 @@ Expected output:
 ```ini
 [Global]
 region=symphony
-kubernetesclusterid=nkqa11
+kubernetesclusterid=<cluster-name>
 
 [ServiceOverride "ec2"]
 Service=ec2
 Region=symphony
-URL=https://172.29.0.20/api/v2/aws/ec2/
+URL=https://<zcompute-ip>/api/v2/aws/ec2/
 SigningRegion=symphony
 ```
 

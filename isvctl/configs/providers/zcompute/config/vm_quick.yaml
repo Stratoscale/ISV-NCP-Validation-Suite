@@ -3,7 +3,7 @@
 # Use this to verify docker GPU and NIM fixes without the full lifecycle.
 #
 # Usage:
-#   export ZCOMPUTE_BASE_URL=https://172.29.0.20
+#   export ZCOMPUTE_BASE_URL=https://<zcompute-ip>
 #   export AWS_ACCESS_KEY_ID=...
 #   export AWS_SECRET_ACCESS_KEY=...
 #   export AWS_REGION=symphony
@@ -87,7 +87,7 @@ tests:
   settings:
     region: "symphony"
     instance_type: "zh1.52xlarge"
-    ami_id: "{{env.ZCOMPUTE_TEST_AMI_ID | default('ami-241c9a9e96d143dc90e1a5a50a3a8152')}}"
+    ami_id: "{{env.ZCOMPUTE_TEST_AMI_ID}}"  # Set ZCOMPUTE_TEST_AMI_ID env var
     teardown_flag: ""
 
   validations:

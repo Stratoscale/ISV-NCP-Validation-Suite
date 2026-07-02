@@ -23,7 +23,7 @@
 #   - install_config_bm    → excludes BmFromConfigCheck (no bare-metal provisioning)
 #
 # Usage:
-#   export ZCOMPUTE_BASE_URL=https://172.29.0.20
+#   export ZCOMPUTE_BASE_URL=https://<zcompute-ip>
 #   export AWS_ACCESS_KEY_ID=<key>
 #   export AWS_SECRET_ACCESS_KEY=<secret>
 #   export AWS_REGION=symphony

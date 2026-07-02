@@ -12,11 +12,11 @@ After import the image's internal UUID is mapped to an EC2-compatible AMI ID:
 Polling runs until state == "ready" or state == "error" (timeout 1800s).
 
 Environment variables:
-  ZCOMPUTE_SYMP_URL       symp endpoint, default http://172.29.0.20
-  ZCOMPUTE_SYMP_USER      default admin
-  ZCOMPUTE_SYMP_DOMAIN    default cloud_admin
-  ZCOMPUTE_SYMP_PASSWORD  default admin
-  ZCOMPUTE_SYMP_PROJECT   default default
+  ZCOMPUTE_SYMP_URL       symp endpoint (falls back to ZCOMPUTE_BASE_URL)
+  ZCOMPUTE_SYMP_USER      symp username
+  ZCOMPUTE_SYMP_DOMAIN    symp domain
+  ZCOMPUTE_SYMP_PASSWORD  symp password
+  ZCOMPUTE_SYMP_PROJECT   symp project (default: default)
   ZCOMPUTE_SYMP_CONTAINER default symp_docker
 
 Output JSON:
@@ -57,11 +57,11 @@ def symp_cmd(args: list[str], timeout: int = 60) -> Any:
 
     Raises RuntimeError on non-zero exit code.
     """
-    url = os.environ.get("ZCOMPUTE_SYMP_URL", "http://172.29.0.20")
-    user = os.environ.get("ZCOMPUTE_SYMP_USER", "amitor")
-    domain = os.environ.get("ZCOMPUTE_SYMP_DOMAIN", "amitor")
-    password = os.environ.get("ZCOMPUTE_SYMP_PASSWORD", "S123456!")
-    project = os.environ.get("ZCOMPUTE_SYMP_PROJECT", "ISV")
+    url = os.environ.get("ZCOMPUTE_SYMP_URL") or os.environ.get("ZCOMPUTE_BASE_URL", "")
+    user = os.environ.get("ZCOMPUTE_SYMP_USER", "")
+    domain = os.environ.get("ZCOMPUTE_SYMP_DOMAIN", "")
+    password = os.environ.get("ZCOMPUTE_SYMP_PASSWORD", "")
+    project = os.environ.get("ZCOMPUTE_SYMP_PROJECT", "")
     container = os.environ.get("ZCOMPUTE_SYMP_CONTAINER", "symp_docker")
 
     cmd = [
