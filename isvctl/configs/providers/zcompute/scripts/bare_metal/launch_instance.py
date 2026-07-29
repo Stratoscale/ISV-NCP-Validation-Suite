@@ -205,6 +205,7 @@ def main() -> int:
                 if ssh_ready and not args.skip_gpu_setup:
                     nvidia_ok = load_nvidia_modules(ssh_ip, args.ssh_user, existing_key)
                     result["nvidia_modules_loaded"] = nvidia_ok
+            print(json.dumps(result, indent=2))
             return 0 if result.get("success") else 1
 
         if not args.ami_id:
