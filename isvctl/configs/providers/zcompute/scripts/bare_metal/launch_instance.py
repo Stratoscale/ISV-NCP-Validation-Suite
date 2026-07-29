@@ -70,10 +70,11 @@ from common.ec2 import (  # noqa: E402
 )
 from common.ssh_utils import wait_for_ssh  # noqa: E402
 
-# ZM.gpu.gb200.a06.ibx4.dpux2 is zcompute's instance-type alias for the
-# real GB200-backed BM hardware (equivalent to AWS's g4dn.metal in the
-# canonical suite).
-DEFAULT_INSTANCE_TYPE = os.environ.get("ZCOMPUTE_BM_INSTANCE_TYPE", "ZM.gpu.gb200.a06.ibx4.dpux2")
+# RunInstances only accepts the EC2-compatible alias "g4dn.metal" — zcompute's
+# native type name for the real GB200-backed hardware
+# (ZM.gpu.gb200.a06.ibx4.dpux2) returns NotFoundException if passed directly
+# (confirmed live 2026-07-29). zcompute maps the alias internally.
+DEFAULT_INSTANCE_TYPE = os.environ.get("ZCOMPUTE_BM_INSTANCE_TYPE", "g4dn.metal")
 DEFAULT_AMI_ID = os.environ.get("ZCOMPUTE_BM_AMI_ID", "")
 DEFAULT_KEY_NAME = "isv-bm-test-key"
 DEFAULT_SSH_USER = "ubuntu"

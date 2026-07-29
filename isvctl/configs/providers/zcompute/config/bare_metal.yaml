@@ -77,6 +77,10 @@ commands:
           - "{{region}}"
           - "--ami-id"
           - "{{ami_id}}"
+          - "--vpc-id"
+          - "{{vpc_id}}"
+          - "--subnet-id"
+          - "{{subnet_id}}"
           - "--skip-gpu-setup"
         timeout: 5400
 
@@ -304,18 +308,25 @@ tests:
   description: "zcompute Bare Metal (BMaaS) validation tests"
 
   settings:
-    # ZM.gpu.gb200.a06.ibx4.dpux2 is zcompute's real GB200-backed BM instance
-    # type (lab access granted 2026-07-29) — the alias equivalent to the
-    # canonical suite's "g4dn.metal". Was TEMPORARILY "z2.3large" (a plain
-    # non-GPU stand-in) before hardware access existed; the --skip-gpu-setup
-    # arg on the launch_instance step above and the `gpu`/InfiniBandCheck/
+    # RunInstances only accepts the EC2-compatible alias "g4dn.metal" here —
+    # NOT zcompute's native type name "ZM.gpu.gb200.a06.ibx4.dpux2" (that
+    # native string returns NotFoundException from RunInstances; confirmed
+    # live 2026-07-29). zcompute maps the alias to the real GB200-backed
+    # hardware internally. Was TEMPORARILY "z2.3large" (a plain non-GPU
+    # stand-in) before hardware access existed; the --skip-gpu-setup arg on
+    # the launch_instance step above and the `gpu`/InfiniBandCheck/
     # CpuInfoCheck excludes below still reflect that stand-in era and have
     # NOT been flipped yet — confirm with the team before removing them,
     # since that's what actually turns on real GPU driver setup, NIM
     # deploy, and the full GPU-marked check set against paid hardware.
     region: "symphony"
-    instance_type: "ZM.gpu.gb200.a06.ibx4.dpux2"
+    instance_type: "g4dn.metal"
     ami_id: "{{env.ZCOMPUTE_BM_AMI_ID}}"
+    # Pinned explicitly — the VPC has more than one subnet and
+    # auto-discovery (describe_subnets, first match) picked the wrong one
+    # on the 2026-07-29 run. This is the run-station-reachable subnet.
+    vpc_id: "vpc-5d0c38ce2a514fd2aacac0075c76ff33"
+    subnet_id: "subnet-4cbc92d033e64ed2ad2ba679c5e5ce37"
     teardown_flag: "{{(env.ZCOMPUTE_BM_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
 
   # image_installed/config_installable aren't defined in the canonical suite
