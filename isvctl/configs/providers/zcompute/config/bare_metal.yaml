@@ -1,0 +1,366 @@
+# zcompute Bare Metal (BMaaS) Validation Configuration
+#
+# Imports the provider-agnostic BM test suite and wires up zcompute scripts.
+# Built for zcompute's upcoming "g4dn.metal" bare-metal instance type (backed
+# by NVIDIA GB200 hardware once the lab cluster grants access) — but as of
+# this writing RunInstances does not yet accept a bare-metal instance type
+# on zcompute, so `instance_type` below is TEMPORARILY set to "z2.3large" (a
+# plain non-GPU type) purely to validate launch/describe/tags/stop/start/
+# reboot/power-cycle/teardown mechanics against the lab cluster
+# (172.16.10.140) ahead of real hardware access. All GPU/NIM/InfiniBand
+# checks are excluded for this reason — see the settings/exclude blocks
+# below for what to revert once g4dn.metal support lands.
+#
+# zcompute adaptations (same fix patterns already applied to vm.yaml/network.yaml):
+#   - All boto3 clients use per-service endpoint URLs via ZCOMPUTE_BASE_URL
+#   - SSL verification disabled (self-signed certs)
+#   - No auto public IP — launch script allocates + associates an EIP
+#   - No boto3 waiters — scripts use custom polling loops
+#   - NVIDIA modules loaded via SSH after launch/start/reboot/power-cycle
+#   - Root device /dev/vda (not /dev/sda)
+#   - Single AZ (symphony), so no multi-AZ subnet selection
+#   - CreateSecurityGroup / CreateKeyPair don't support TagSpecifications
+#     (RunInstances does — confirmed working)
+#   - GetConsoleOutput confirmed NOT implemented (500 InternalFailure) —
+#     serial_console.py degrades gracefully; SerialConsoleCheck /
+#     SerialConsoleRetentionCheck excluded below
+#   - CreatePlacementGroup/DescribePlacementGroups confirmed NOT implemented
+#     (AuthFailure) — topology_placement.py degrades gracefully;
+#     TopologyPlacementCheck excluded below. TODO: revisit once symp CLI
+#     access is available — zcompute exposes GPU-fabric topology natively
+#     via `gpunet-pool` (see ../scripts/network/nvlink_domain_test.py)
+#   - AttachVolume/DetachVolume confirmed working end-to-end (2026-07-12)
+#     against a running instance — reverses an earlier 403 Forbidden
+#     finding (likely transient). reinstall_instance is enabled below to
+#     verify the stopped-instance attach case this script actually uses.
+#   - GPU count for the eventual GB200-backed g4dn.metal type is not yet
+#     confirmed — expected_gpus overrides below (and the canonical suite's
+#     default of 8) are placeholders; revisit once hardware specs land
+#
+# Usage:
+#   export ZCOMPUTE_BASE_URL=https://<zcompute-ip>
+#   export AWS_ACCESS_KEY_ID=...
+#   export AWS_SECRET_ACCESS_KEY=...
+#   export AWS_REGION=symphony
+#   export ZCOMPUTE_BM_AMI_ID=...    # no bare-metal-ready image exists yet
+#   PYTHONPATH=isvctl/src:isvtest/src:isvreporter/src \
+#     uv run isvctl test run -f isvctl/configs/providers/zcompute/config/bare_metal.yaml
+#
+# To reuse an existing instance (skip launch cost):
+#   export ZCOMPUTE_BM_INSTANCE_ID=i-xxx
+#   export ZCOMPUTE_BM_KEY_FILE=/path/to/key.pem
+
+import:
+  - ../../../suites/bare_metal.yaml
+
+version: "1.0"
+
+commands:
+  bare_metal:
+    phases: ["setup", "test", "teardown"]
+    steps:
+      # --skip-gpu-setup: TEMPORARY, for the current z2.3large integration
+      # run only (no GPU present) — remove once instance_type below is
+      # switched back to a real GPU-backed bare-metal type.
+      - name: launch_instance
+        phase: setup
+        command: "python3 ../scripts/bare_metal/launch_instance.py"
+        args:
+          - "--name"
+          - "isv-bm-test-gpu"
+          - "--instance-type"
+          - "{{instance_type}}"
+          - "--region"
+          - "{{region}}"
+          - "--ami-id"
+          - "{{ami_id}}"
+          - "--skip-gpu-setup"
+        timeout: 5400
+
+      - name: list_instances
+        phase: test
+        command: "python3 ../scripts/vm/list_instances.py"
+        args:
+          - "--vpc-id"
+          - "{{steps.launch_instance.vpc_id}}"
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 120
+
+      - name: verify_tags
+        phase: test
+        command: "python3 ../scripts/bare_metal/describe_tags.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 60
+
+      # Not implemented on zcompute (AuthFailure) — degrades gracefully.
+      # TopologyPlacementCheck excluded below.
+      - name: topology_placement
+        phase: test
+        command: "python3 ../scripts/bare_metal/topology_placement.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 120
+        continue_on_failure: true
+
+      # Not implemented on zcompute (500 InternalFailure) — degrades gracefully.
+      # SerialConsoleCheck / SerialConsoleRetentionCheck excluded below.
+      - name: serial_console
+        phase: test
+        command: "python3 ../scripts/bare_metal/serial_console.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 60
+        continue_on_failure: true
+
+      # DescribeInstances + DescribeImages only — both confirmed working.
+      - name: verify_image
+        phase: test
+        command: "python3 ../scripts/image-registry/verify_image_installed.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 60
+
+      # CreateLaunchTemplate confirmed NOT implemented on zcompute (AuthFailure,
+      # verified 2026-07-29) — this script skips launch-template creation
+      # entirely (never attempted) and substitutes a direct
+      # RunInstances(DryRun=True) using the instance's own config instead.
+      # Output explicitly marks launch_template_supported: false so nothing
+      # looks like it's passing that isn't.
+      - name: verify_config
+        phase: test
+        command: "python3 ../scripts/image-registry/verify_config_installable.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 60
+
+      - name: stop_instance
+        phase: test
+        command: "python3 ../scripts/bare_metal/stop_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 2100
+
+      - name: start_instance
+        phase: test
+        command: "python3 ../scripts/bare_metal/start_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--pre-start-delay"
+          - "600"
+        # 600 pre-delay + 4 retries * 2700s poll + 3 * 300s between-retry waits + SSH/module buffer
+        timeout: 13500
+
+      - name: reboot_instance
+        phase: test
+        command: "python3 ../scripts/bare_metal/reboot_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--public-ip"
+          - "{{steps.start_instance.public_ip}}"
+          - "--wait-before-check"
+          - "180"
+        timeout: 3600
+
+      # Hard power off + on (cold start). Force=True on stop_instances is
+      # unverified on zcompute — the script falls back to a plain stop if
+      # the service rejects it.
+      - name: power_cycle_instance
+        phase: test
+        command: "python3 ../scripts/bare_metal/power_cycle_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--pre-start-delay"
+          - "600"
+        timeout: 16200
+
+      # Describe instance state - SSH/GPU validation anchor.
+      # Runs after power_cycle so the IP is current (stop/start may reassign it).
+      - name: describe_instance
+        phase: test
+        command: "python3 ../scripts/bare_metal/describe_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+        timeout: 120
+
+      # Reinstall from stock OS (stop + root volume swap + start).
+      # AttachVolume/DetachVolume confirmed working end-to-end (2026-07-12),
+      # so the earlier 403 Forbidden blocker no longer applies - but kept
+      # skip:true to match the AWS reference config's default (parity with
+      # AWS "as much as we can" per 2026-07-29). Set skip: false to actually
+      # exercise this step; nothing API-side is blocking it anymore.
+      - name: reinstall_instance
+        phase: test
+        skip: true
+        command: "python3 ../scripts/bare_metal/reinstall_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+        timeout: 6000
+
+      # Deploy NIM container via SSH (shared script). Requires NGC_API_KEY.
+      # Uses post-power-cycle IP/key since power-cycle may reassign the public IP.
+      # Unskipped 2026-07-29 for AWS parity — will fail on z2.3large (no GPU
+      # to deploy NIM against); expected until instance_type is GPU-backed.
+      - name: deploy_nim
+        phase: test
+        command: "python3 ../../shared/deploy_nim.py"
+        args:
+          - "--host"
+          - "{{steps.power_cycle_instance.public_ip}}"
+          - "--key-file"
+          - "{{steps.power_cycle_instance.key_file}}"
+        timeout: 1800
+
+      - name: teardown_nim
+        phase: teardown
+        command: "python3 ../../shared/teardown_nim.py"
+        args:
+          - "--host"
+          - "{{steps.power_cycle_instance.public_ip}}"
+          - "--key-file"
+          - "{{steps.power_cycle_instance.key_file}}"
+        timeout: 120
+
+      - name: teardown
+        phase: teardown
+        command: "python3 ../scripts/bare_metal/teardown.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--eip-allocation-id"
+          - "{{steps.launch_instance.eip_allocation_id}}"
+          - "--delete-key-pair"
+          - "--delete-security-group"
+          - "{{teardown_flag}}"
+        timeout: 2400
+
+      - name: verify_teardown
+        phase: teardown
+        command: "python3 ../scripts/bare_metal/verify_terminated.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--security-group-id"
+          - "{{steps.launch_instance.security_group_id}}"
+          - "--key-name"
+          - "{{steps.launch_instance.key_name}}"
+        timeout: 120
+
+tests:
+  cluster_name: "zcompute-bm-validation"
+  description: "zcompute Bare Metal (BMaaS) validation tests"
+
+  settings:
+    # TEMPORARY: z2.3large is a plain non-GPU instance type, used only to
+    # validate launch/lifecycle/API integration mechanics against the lab
+    # cluster before real BM/GB200 (g4dn.metal) support exists. Switch back
+    # to "g4dn.metal" (and drop the --skip-gpu-setup arg + the gpu marker
+    # exclude below) once it does. deploy_nim/teardown_nim are intentionally
+    # NOT skipped (AWS parity) — they will fail here since z2.3large has no
+    # GPU; expected until instance_type is GPU-backed.
+    region: "symphony"
+    instance_type: "z2.3large"
+    ami_id: "{{env.ZCOMPUTE_BM_AMI_ID}}"
+    teardown_flag: "{{(env.ZCOMPUTE_BM_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
+
+  # image_installed/config_installable aren't defined in the canonical suite
+  # (../../../suites/bare_metal.yaml) at all — same as the AWS reference,
+  # which adds them itself. expected_gpus etc. otherwise inherited as-is
+  # until GB200 GPU-per-node count is confirmed.
+  validations:
+    image_installed:
+      step: verify_image
+      checks:
+        StepSuccessCheck: {}
+        FieldExistsCheck:
+          fields: ["instance_id", "image_id", "image_name", "instance_state"]
+        InstanceStateCheck:
+          expected_state: "running"
+
+    # dry_run_passed is a substitute proof (direct RunInstances DryRun), not
+    # a real Launch Template dry-run — see verify_config_installable.py.
+    # launch_template_supported/config_creation_status are always in the
+    # output too, deliberately not asserted on here so a failing/passing
+    # FieldExistsCheck can't be mistaken for "Launch Templates supported."
+    config_installable:
+      step: verify_config
+      checks:
+        StepSuccessCheck: {}
+        FieldExistsCheck:
+          fields: ["config_id", "config_name", "dry_run_passed", "launch_template_supported"]
+
+  exclude:
+    markers:
+      # z2.3large has no GPU — drops GpuCheck, DriverCheck, PciBusCheck,
+      # GpuStressCheck, NcclCheck, TrainingCheck, NvlinkCheck,
+      # ContainerRuntimeCheck, NimHealthCheck, NimInferenceCheck,
+      # NimModelCheck in one shot (all carry the "gpu" marker). TEMPORARY —
+      # remove once instance_type above is GPU-backed.
+      - gpu
+    tests:
+      # Not implemented on zcompute — scripts return not_supported gracefully.
+      - SerialConsoleCheck
+      - SerialConsoleRetentionCheck
+      - TopologyPlacementCheck
+      # z2.3large has no InfiniBand HCAs either (no "gpu" marker, so not
+      # caught by the exclude above). TEMPORARY — remove once instance_type
+      # is GPU/IB-backed.
+      - InfiniBandCheck
+      # CpuInfoCheck's pci_nvidia subtest unconditionally requires
+      # `lspci | grep -i nvidia` to find something (isvtest/validations/
+      # host.py:245-251) — no "gpu" marker despite being GPU-specific, so
+      # the markers exclude above doesn't catch it. Confirmed via a live
+      # run against 172.16.10.140 on 2026-07-09: every other check passed,
+      # only this one failed. TEMPORARY — remove once instance_type is
+      # GPU-backed.
+      - CpuInfoCheck

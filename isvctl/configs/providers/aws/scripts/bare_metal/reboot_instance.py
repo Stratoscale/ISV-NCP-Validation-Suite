@@ -148,12 +148,14 @@ def main() -> int:
         )
         time.sleep(args.wait_before_check)
 
-        # Bare-metal status checks can take 5-10 min after reboot
+        # Bare-metal status checks after reboot need the same budget as
+        # start_instance.py's post-boot wait (observed exceeding the
+        # original 15-min budget on 2026-07-09) - up to 45 min.
         print("Waiting for instance status checks (bare-metal takes longer)...", file=sys.stderr)
         waiter = ec2.get_waiter("instance_status_ok")
         waiter.wait(
             InstanceIds=[args.instance_id],
-            WaiterConfig={"Delay": 15, "MaxAttempts": 60},
+            WaiterConfig={"Delay": 30, "MaxAttempts": 90},
         )
         print("  Instance status checks passed", file=sys.stderr)
 

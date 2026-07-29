@@ -181,7 +181,9 @@ commands:
           - "{{steps.launch_instance.key_file}}"
           - "--public-ip"
           - "{{steps.start_instance.public_ip}}"
-        timeout: 1800
+        # 120s pre-wait + up to 45min status-ok waiter (bumped from 15min on
+        # 2026-07-10 after it exceeded budget) + SSH/uptime buffer
+        timeout: 3300
 
       # Power-cycle: hard power off + power on (cold start)
       # Force=True bypasses OS shutdown - equivalent to pulling the power
