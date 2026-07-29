@@ -9,12 +9,13 @@ volume than the VM path since BM workloads typically need more local disk.
 zcompute-specific notes (same as VM path):
   - No boto3 waiters — uses custom polling.
   - Root device is /dev/vda (not /dev/sda).
-  - No EIP is allocated — this cluster's run station reaches BM instances
-    directly over the private network (confirmed live 2026-07-29: the
-    elastic IP was never reachable from the run station, private IP is).
-    SSH/nvidia-module-load/GPU-deps all target private_ip. public_ip is
-    left "" (empty) in the output rather than omitted, to satisfy the
-    "instance" output schema's plain string type.
+  - EIP is still allocated/associated after launch — confirmed 2026-07-29
+    that associating an EIP is what actually causes the backend (NICo) to
+    attach a network interface to bare-metal instances at all; without it,
+    RunInstances' SubnetId is silently dropped and the instance never gets
+    a network (a real ec2-compute bug, reported upstream). SSH/nvidia-
+    module-load/GPU-deps still target private_ip though — the EIP itself
+    was confirmed unreachable from this run station.
   - NVIDIA modules must be loaded via modprobe after SSH.
   - CreateSecurityGroup / CreateKeyPair do not support TagSpecifications
     (common/ec2.py helpers already omit them); RunInstances does accept
@@ -43,11 +44,11 @@ Output JSON:
 {
     "success": true, "platform": "bm",
     "instance_id": "i-xxx", "instance_type": "g4dn.metal",
-    "public_ip": "", "private_ip": "172.31.x.x",
+    "public_ip": "172.28.x.x", "private_ip": "172.31.x.x",
     "state": "running", "ami_id": "ami-xxx",
     "key_name": "isv-bm-test-key", "key_file": "/tmp/isv-bm-test-key.pem",
     "vpc_id": "vpc-xxx", "subnet_id": "subnet-xxx",
-    "security_group_id": "sg-xxx", "eip_allocation_id": ""
+    "security_group_id": "sg-xxx", "eip_allocation_id": "eipalloc-xxx"
 }
 """
 
@@ -65,11 +66,13 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from common.client import get_client  # noqa: E402
 from common.ec2 import (  # noqa: E402
+    allocate_and_associate_eip,
     create_key_pair,
     create_security_group,
     load_nvidia_modules,
     poll_instance_state,
     setup_gpu_dependencies,
+    wait_for_public_ip,
 )
 from common.ssh_utils import wait_for_ssh  # noqa: E402
 
@@ -192,8 +195,9 @@ def main() -> int:
     try:
         if existing_id and existing_key:
             result = _reuse_instance(ec2, existing_id, existing_key)
-            ssh_ip = result.get("private_ip")
-            if ssh_ip:
+            public_ip = result.get("public_ip")
+            if public_ip:
+                ssh_ip = result.get("private_ip")
                 ssh_ready = wait_for_ssh(
                     ssh_ip, args.ssh_user, existing_key, max_attempts=60, interval=15
                 )
@@ -328,9 +332,17 @@ def main() -> int:
                 f"Instance {instance_id} did not reach 'running' within 45 min (last state: {state})"
             )
 
-        # No EIP — the run station reaches BM instances directly over the
-        # private network (confirmed 2026-07-29; the elastic IP path was
-        # never actually reachable from here). SSH straight to private_ip.
+        # EIP allocation is what actually gets NICo to attach a network
+        # interface to the instance (confirmed 2026-07-29 — without it,
+        # RunInstances' SubnetId is silently dropped and the instance never
+        # gets a network at all). SSH still targets private_ip — the EIP
+        # itself was confirmed unreachable from this run station.
+        allocation_id, public_ip = allocate_and_associate_eip(ec2, instance_id)
+
+        confirmed_ip = wait_for_public_ip(ec2, instance_id, timeout=120, interval=5)
+        if confirmed_ip:
+            public_ip = confirmed_ip
+
         ssh_ready = wait_for_ssh(private_ip, args.ssh_user, key_file, max_attempts=60, interval=15)
 
         result = {
@@ -338,7 +350,7 @@ def main() -> int:
             "platform": "bm",
             "instance_id": instance_id,
             "instance_type": args.instance_type,
-            "public_ip": "",
+            "public_ip": public_ip,
             "private_ip": private_ip,
             "state": state,
             "ami_id": args.ami_id,
@@ -347,7 +359,7 @@ def main() -> int:
             "vpc_id": vpc_id,
             "subnet_id": subnet_id,
             "security_group_id": sg_id,
-            "eip_allocation_id": "",
+            "eip_allocation_id": allocation_id,
             "ssh_ready": ssh_ready,
             "nvidia_modules_loaded": False,
             "gpu_deps": {},

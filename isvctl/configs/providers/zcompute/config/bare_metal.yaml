@@ -252,7 +252,9 @@ commands:
 
       # Deploy NIM container via SSH (shared script). Requires NGC_API_KEY.
       # Uses post-power-cycle IP/key since power-cycle may reassign the IP.
-      # No EIP on this cluster — private_ip is the reachable SSH target.
+      # EIP is still allocated (needed for NICo to attach a network at all)
+      # but private_ip is the actual reachable SSH target from this run
+      # station.
       # Unskipped 2026-07-29 for AWS parity — will fail on z2.3large (no GPU
       # to deploy NIM against); expected until instance_type is GPU-backed.
       - name: deploy_nim

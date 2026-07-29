@@ -5,9 +5,10 @@ Same as scripts/vm/reboot_instance.py, with a longer default
 wait-before-check and poll timeout — bare-metal reboot goes through a full
 hardware POST/BIOS cycle rather than a hypervisor-managed VM restart.
 
-No EIP on this cluster — SSH targets the instance's private_ip directly
-(confirmed 2026-07-29; the elastic IP path was never reachable from the
-run station).
+SSH targets the instance's private_ip directly — the EIP is still
+allocated/associated at launch (that's what gets NICo to attach a network
+interface at all), but the EIP itself was confirmed unreachable from this
+run station (2026-07-29), so private_ip is what's actually used here.
 
 Output JSON:
 {

@@ -14,7 +14,7 @@ Output JSON:
     "instance_id": "i-xxx",
     "previous_state": "stopped",
     "state": "running",
-    "public_ip": "",
+    "public_ip": "172.28.x.x",
     "private_ip": "172.31.x.x",
     "ssh_ready": true,
     "nvidia_modules_loaded": true
@@ -37,6 +37,7 @@ from common.client import get_client  # noqa: E402
 from common.ec2 import (  # noqa: E402
     load_nvidia_modules,
     poll_instance_state,
+    wait_for_public_ip,
 )
 from common.ssh_utils import wait_for_ssh  # noqa: E402
 
@@ -135,13 +136,21 @@ def main() -> int:
 
             result["state"] = final_state
 
-        # No EIP on this cluster — private_ip is the reachable SSH target,
-        # assigned immediately at boot (no wait_for_public_ip poll needed).
+        # Poll for the EIP to reappear (it persists across stop/start, but
+        # takes a moment to reassociate) — private_ip is still the actual
+        # SSH target, but public_ip presence confirms the network survived.
+        public_ip = wait_for_public_ip(ec2, args.instance_id, timeout=120, interval=5)
+
         resp = ec2.describe_instances(InstanceIds=[args.instance_id])
         inst = resp["Reservations"][0]["Instances"][0]
         private_ip = inst.get("PrivateIpAddress")
 
-        result["public_ip"] = ""
+        if not public_ip:
+            raw = inst.get("PublicIpAddress")
+            if raw and raw not in ("", "None"):
+                public_ip = raw
+
+        result["public_ip"] = public_ip
         result["private_ip"] = private_ip
         result["state"] = inst["State"]["Name"]
 
