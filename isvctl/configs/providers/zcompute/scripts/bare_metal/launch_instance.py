@@ -343,6 +343,14 @@ def main() -> int:
         if confirmed_ip:
             public_ip = confirmed_ip
 
+        # private_ip captured right after run_instances() is stale — at that
+        # point the network isn't attached yet (that only happens once the
+        # EIP is associated above). Re-fetch it now that the network exists.
+        _refresh = ec2.describe_instances(InstanceIds=[instance_id])
+        _refreshed_ip = _refresh["Reservations"][0]["Instances"][0].get("PrivateIpAddress")
+        if _refreshed_ip:
+            private_ip = _refreshed_ip
+
         ssh_ready = wait_for_ssh(private_ip, args.ssh_user, key_file, max_attempts=60, interval=15)
 
         result = {
