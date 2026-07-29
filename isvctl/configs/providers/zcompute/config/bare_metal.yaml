@@ -363,6 +363,99 @@ tests:
         FieldExistsCheck:
           fields: ["config_id", "config_name", "dry_run_passed", "launch_template_supported"]
 
+    # zcompute-specific SSH host override: the canonical suite's automatic
+    # step-output fallback (BaseValidation's get_ssh_config) tries
+    # public_ip before private_ip. Now that EIP allocation is restored
+    # (needed for NICo to attach a network at all — see launch_instance.py
+    # notes), public_ip is non-empty again and would win that fallback —
+    # but the EIP itself is confirmed unreachable from this run station
+    # (2026-07-29). Every non-excluded SSH-touching check group needs an
+    # explicit private_ip override; gpu-marked/excluded groups don't
+    # matter today (nothing runs) so they're left alone.
+    cloud_init:
+      step: launch_instance
+      checks:
+        CloudInitCheck:
+          host: "{{steps.launch_instance.private_ip}}"
+          key_file: "{{steps.launch_instance.key_file}}"
+
+    ssh:
+      step: describe_instance
+      checks:
+        ConnectivityCheck:
+          host: "{{steps.describe_instance.private_ip}}"
+          key_file: "{{steps.describe_instance.key_file}}"
+        OsCheck:
+          host: "{{steps.describe_instance.private_ip}}"
+          key_file: "{{steps.describe_instance.key_file}}"
+          expected_os: "ubuntu"
+
+    host_os:
+      step: describe_instance
+      checks:
+        VcpuPinningCheck:
+          host: "{{steps.describe_instance.private_ip}}"
+          key_file: "{{steps.describe_instance.key_file}}"
+        HostSoftwareCheck:
+          host: "{{steps.describe_instance.private_ip}}"
+          key_file: "{{steps.describe_instance.key_file}}"
+
+    ethernet:
+      step: describe_instance
+      checks:
+        EthernetCheck:
+          host: "{{steps.describe_instance.private_ip}}"
+          key_file: "{{steps.describe_instance.key_file}}"
+          ping_target: "8.8.8.8"
+
+    # start_ssh/reboot_ssh bind to describe_instance (not start_instance/
+    # reboot_instance directly) same as the canonical suite does for
+    # public_ip — describe_instance runs last so its IP is freshest after
+    # a power event that might reassign it.
+    start_ssh:
+      step: start_instance
+      checks:
+        ConnectivityCheck:
+          host: "{{steps.describe_instance.private_ip}}"
+          key_file: "{{steps.describe_instance.key_file}}"
+        OsCheck:
+          host: "{{steps.describe_instance.private_ip}}"
+          key_file: "{{steps.describe_instance.key_file}}"
+          expected_os: "ubuntu"
+
+    reboot_ssh:
+      step: reboot_instance
+      checks:
+        ConnectivityCheck:
+          host: "{{steps.describe_instance.private_ip}}"
+          key_file: "{{steps.describe_instance.key_file}}"
+        OsCheck:
+          host: "{{steps.describe_instance.private_ip}}"
+          key_file: "{{steps.describe_instance.key_file}}"
+          expected_os: "ubuntu"
+
+    power_cycle_ssh:
+      step: power_cycle_instance
+      checks:
+        ConnectivityCheck:
+          host: "{{steps.power_cycle_instance.private_ip}}"
+          key_file: "{{steps.power_cycle_instance.key_file}}"
+        OsCheck:
+          host: "{{steps.power_cycle_instance.private_ip}}"
+          key_file: "{{steps.power_cycle_instance.key_file}}"
+          expected_os: "ubuntu"
+
+    reinstall_ssh:
+      step: reinstall_instance
+      checks:
+        ConnectivityCheck:
+          host: "{{steps.reinstall_instance.private_ip}}"
+          key_file: "{{steps.reinstall_instance.key_file}}"
+        OsCheck:
+          host: "{{steps.reinstall_instance.private_ip}}"
+          key_file: "{{steps.reinstall_instance.key_file}}"
+          expected_os: "ubuntu"
+
   exclude:
     markers:
       # z2.3large has no GPU — drops GpuCheck, DriverCheck, PciBusCheck,
