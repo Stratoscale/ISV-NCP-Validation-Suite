@@ -62,6 +62,9 @@ commands:
       # --skip-gpu-setup: TEMPORARY, for the current z2.3large integration
       # run only (no GPU present) — remove once instance_type below is
       # switched back to a real GPU-backed bare-metal type.
+      # launch_instance.py applies ../scripts/bare_metal/cloud-init.yaml as
+      # UserData by default (WireGuard VPN enrollment + SSH password auth,
+      # see that file) — no explicit arg needed unless overriding.
       - name: launch_instance
         phase: setup
         command: "python3 ../scripts/bare_metal/launch_instance.py"
@@ -301,15 +304,17 @@ tests:
   description: "zcompute Bare Metal (BMaaS) validation tests"
 
   settings:
-    # TEMPORARY: z2.3large is a plain non-GPU instance type, used only to
-    # validate launch/lifecycle/API integration mechanics against the lab
-    # cluster before real BM/GB200 (g4dn.metal) support exists. Switch back
-    # to "g4dn.metal" (and drop the --skip-gpu-setup arg + the gpu marker
-    # exclude below) once it does. deploy_nim/teardown_nim are intentionally
-    # NOT skipped (AWS parity) — they will fail here since z2.3large has no
-    # GPU; expected until instance_type is GPU-backed.
+    # ZM.gpu.gb200.a06.ibx4.dpux2 is zcompute's real GB200-backed BM instance
+    # type (lab access granted 2026-07-29) — the alias equivalent to the
+    # canonical suite's "g4dn.metal". Was TEMPORARILY "z2.3large" (a plain
+    # non-GPU stand-in) before hardware access existed; the --skip-gpu-setup
+    # arg on the launch_instance step above and the `gpu`/InfiniBandCheck/
+    # CpuInfoCheck excludes below still reflect that stand-in era and have
+    # NOT been flipped yet — confirm with the team before removing them,
+    # since that's what actually turns on real GPU driver setup, NIM
+    # deploy, and the full GPU-marked check set against paid hardware.
     region: "symphony"
-    instance_type: "z2.3large"
+    instance_type: "ZM.gpu.gb200.a06.ibx4.dpux2"
     ami_id: "{{env.ZCOMPUTE_BM_AMI_ID}}"
     teardown_flag: "{{(env.ZCOMPUTE_BM_SKIP_TEARDOWN == 'true') | ternary('--skip-destroy', '')}}"
 

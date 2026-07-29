@@ -21,6 +21,14 @@ zcompute-specific notes (same as VM path):
     (e.g. z2.3large, used for integration-testing this suite's lifecycle
     mechanics before real BM/GB200 support exists) to skip the NVIDIA
     modprobe / Docker+CUDA+NCT install work entirely.
+  - RunInstances is launched with UserData from cloud-init.yaml (colocated
+    with this script, or override via --user-data-file /
+    ZCOMPUTE_BM_USER_DATA_FILE) — enrolls the instance into the lab
+    WireGuard VPN mesh so it's reachable, and sets up SSH access. UserData
+    support on zcompute's RunInstances is unconfirmed until tested live;
+    result["user_data_applied"] records whether it was sent (not whether
+    zcompute actually honored it — that still needs to be verified against
+    the launched instance).
 
 Environment:
     ZCOMPUTE_BM_INSTANCE_ID  - if set, reuse this instance instead of launching
@@ -62,10 +70,17 @@ from common.ec2 import (  # noqa: E402
 )
 from common.ssh_utils import wait_for_ssh  # noqa: E402
 
-DEFAULT_INSTANCE_TYPE = os.environ.get("ZCOMPUTE_BM_INSTANCE_TYPE", "g4dn.metal")
+# ZM.gpu.gb200.a06.ibx4.dpux2 is zcompute's instance-type alias for the
+# real GB200-backed BM hardware (equivalent to AWS's g4dn.metal in the
+# canonical suite).
+DEFAULT_INSTANCE_TYPE = os.environ.get("ZCOMPUTE_BM_INSTANCE_TYPE", "ZM.gpu.gb200.a06.ibx4.dpux2")
 DEFAULT_AMI_ID = os.environ.get("ZCOMPUTE_BM_AMI_ID", "")
 DEFAULT_KEY_NAME = "isv-bm-test-key"
 DEFAULT_SSH_USER = "ubuntu"
+DEFAULT_USER_DATA_FILE = os.environ.get(
+    "ZCOMPUTE_BM_USER_DATA_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "cloud-init.yaml"),
+)
 
 
 def _get_default_vpc_and_subnet(ec2: Any) -> tuple[str, str]:
@@ -154,6 +169,13 @@ def main() -> int:
         help="Skip NVIDIA module load / Docker+CUDA+NCT install after SSH comes up "
              "(for non-GPU stand-in instance types used for integration testing)",
     )
+    parser.add_argument(
+        "--user-data-file",
+        default=DEFAULT_USER_DATA_FILE,
+        help="cloud-config file passed as RunInstances UserData (default: "
+             "cloud-init.yaml colocated with this script). Pass an empty "
+             "string to launch with no user-data.",
+    )
     args = parser.parse_args()
 
     result: dict[str, Any] = {"success": False, "platform": "bm"}
@@ -216,11 +238,17 @@ def main() -> int:
         sg_name = f"{args.name}-sg"
         sg_id = create_security_group(ec2, vpc_id, sg_name)
 
+        user_data = ""
+        if args.user_data_file:
+            with open(args.user_data_file, encoding="utf-8") as _f:
+                user_data = _f.read()
+            print(f"[launch] loaded user-data from {args.user_data_file}", file=sys.stderr)
+
         print(
             f"[launch] launching {args.instance_type} from {args.ami_id} ...",
             file=sys.stderr,
         )
-        run_resp = ec2.run_instances(
+        run_kwargs: dict[str, Any] = dict(
             ImageId=args.ami_id,
             InstanceType=args.instance_type,
             MinCount=1,
@@ -249,6 +277,11 @@ def main() -> int:
                 }
             ],
         )
+        if user_data:
+            # boto3 base64-encodes UserData automatically; pass the raw text.
+            run_kwargs["UserData"] = user_data
+
+        run_resp = ec2.run_instances(**run_kwargs)
         instance_id = run_resp["Instances"][0]["InstanceId"]
         private_ip = run_resp["Instances"][0].get("PrivateIpAddress")
         print(f"[launch] instance {instance_id} launched", file=sys.stderr)
@@ -317,6 +350,7 @@ def main() -> int:
             "ssh_ready": ssh_ready,
             "nvidia_modules_loaded": False,
             "gpu_deps": {},
+            "user_data_applied": bool(user_data),
         }
 
         if ssh_ready and args.skip_gpu_setup:
