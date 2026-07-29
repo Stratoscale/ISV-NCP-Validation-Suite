@@ -23,7 +23,7 @@ Output JSON:
     "platform": "bm",
     "instance_id": "i-xxx",
     "state": "running",
-    "public_ip": "172.28.x.x",
+    "public_ip": "",
     "key_file": "/tmp/isv-bm-test-key.pem",
     "ssh_ready": true,
     "reinstall_method": "root_volume_swap"
@@ -43,7 +43,7 @@ from botocore.exceptions import ClientError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from common.client import get_client  # noqa: E402
-from common.ec2 import poll_instance_state, wait_for_public_ip  # noqa: E402
+from common.ec2 import poll_instance_state  # noqa: E402
 from common.ssh_utils import wait_for_ssh  # noqa: E402
 
 
@@ -169,17 +169,18 @@ def main() -> int:
         inst = resp["Reservations"][0]["Instances"][0]
 
         result["state"] = inst["State"]["Name"]
+        # No EIP on this cluster — private_ip is the reachable SSH target,
+        # assigned immediately at boot (no wait_for_public_ip poll needed).
         result["private_ip"] = inst.get("PrivateIpAddress")
+        result["public_ip"] = ""
 
-        public_ip = inst.get("PublicIpAddress") or wait_for_public_ip(ec2, args.instance_id)
-        if not public_ip or public_ip in ("", "None"):
-            result["error"] = "Instance has no public IP after reinstall (timed out polling)"
+        if not result["private_ip"]:
+            result["error"] = "Instance has no private IP after reinstall"
             print(json.dumps(result, indent=2))
             return 1
-        result["public_ip"] = public_ip
 
         print("[reinstall] waiting for SSH ...", file=sys.stderr)
-        ssh_ready = wait_for_ssh(public_ip, args.ssh_user, args.key_file, max_attempts=60, interval=15)
+        ssh_ready = wait_for_ssh(result["private_ip"], args.ssh_user, args.key_file, max_attempts=60, interval=15)
         result["ssh_ready"] = ssh_ready
 
         if not ssh_ready:

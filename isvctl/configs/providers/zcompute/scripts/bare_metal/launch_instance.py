@@ -9,7 +9,12 @@ volume than the VM path since BM workloads typically need more local disk.
 zcompute-specific notes (same as VM path):
   - No boto3 waiters — uses custom polling.
   - Root device is /dev/vda (not /dev/sda).
-  - No auto public IP — EIP must be allocated and associated manually.
+  - No EIP is allocated — this cluster's run station reaches BM instances
+    directly over the private network (confirmed live 2026-07-29: the
+    elastic IP was never reachable from the run station, private IP is).
+    SSH/nvidia-module-load/GPU-deps all target private_ip. public_ip is
+    left "" (empty) in the output rather than omitted, to satisfy the
+    "instance" output schema's plain string type.
   - NVIDIA modules must be loaded via modprobe after SSH.
   - CreateSecurityGroup / CreateKeyPair do not support TagSpecifications
     (common/ec2.py helpers already omit them); RunInstances does accept
@@ -38,11 +43,11 @@ Output JSON:
 {
     "success": true, "platform": "bm",
     "instance_id": "i-xxx", "instance_type": "g4dn.metal",
-    "public_ip": "172.28.x.x", "private_ip": "172.31.x.x",
+    "public_ip": "", "private_ip": "172.31.x.x",
     "state": "running", "ami_id": "ami-xxx",
     "key_name": "isv-bm-test-key", "key_file": "/tmp/isv-bm-test-key.pem",
     "vpc_id": "vpc-xxx", "subnet_id": "subnet-xxx",
-    "security_group_id": "sg-xxx", "eip_allocation_id": "eipalloc-xxx"
+    "security_group_id": "sg-xxx", "eip_allocation_id": ""
 }
 """
 
@@ -60,13 +65,11 @@ from botocore.exceptions import ClientError
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from common.client import get_client  # noqa: E402
 from common.ec2 import (  # noqa: E402
-    allocate_and_associate_eip,
     create_key_pair,
     create_security_group,
     load_nvidia_modules,
     poll_instance_state,
     setup_gpu_dependencies,
-    wait_for_public_ip,
 )
 from common.ssh_utils import wait_for_ssh  # noqa: E402
 
@@ -189,14 +192,14 @@ def main() -> int:
     try:
         if existing_id and existing_key:
             result = _reuse_instance(ec2, existing_id, existing_key)
-            public_ip = result.get("public_ip")
-            if public_ip:
+            ssh_ip = result.get("private_ip")
+            if ssh_ip:
                 ssh_ready = wait_for_ssh(
-                    public_ip, args.ssh_user, existing_key, max_attempts=60, interval=15
+                    ssh_ip, args.ssh_user, existing_key, max_attempts=60, interval=15
                 )
                 result["ssh_ready"] = ssh_ready
                 if ssh_ready and not args.skip_gpu_setup:
-                    nvidia_ok = load_nvidia_modules(public_ip, args.ssh_user, existing_key)
+                    nvidia_ok = load_nvidia_modules(ssh_ip, args.ssh_user, existing_key)
                     result["nvidia_modules_loaded"] = nvidia_ok
             return 0 if result.get("success") else 1
 
@@ -325,20 +328,17 @@ def main() -> int:
                 f"Instance {instance_id} did not reach 'running' within 45 min (last state: {state})"
             )
 
-        allocation_id, public_ip = allocate_and_associate_eip(ec2, instance_id)
-
-        confirmed_ip = wait_for_public_ip(ec2, instance_id, timeout=120, interval=5)
-        if confirmed_ip:
-            public_ip = confirmed_ip
-
-        ssh_ready = wait_for_ssh(public_ip, args.ssh_user, key_file, max_attempts=60, interval=15)
+        # No EIP — the run station reaches BM instances directly over the
+        # private network (confirmed 2026-07-29; the elastic IP path was
+        # never actually reachable from here). SSH straight to private_ip.
+        ssh_ready = wait_for_ssh(private_ip, args.ssh_user, key_file, max_attempts=60, interval=15)
 
         result = {
             "success": True,
             "platform": "bm",
             "instance_id": instance_id,
             "instance_type": args.instance_type,
-            "public_ip": public_ip,
+            "public_ip": "",
             "private_ip": private_ip,
             "state": state,
             "ami_id": args.ami_id,
@@ -347,7 +347,7 @@ def main() -> int:
             "vpc_id": vpc_id,
             "subnet_id": subnet_id,
             "security_group_id": sg_id,
-            "eip_allocation_id": allocation_id,
+            "eip_allocation_id": "",
             "ssh_ready": ssh_ready,
             "nvidia_modules_loaded": False,
             "gpu_deps": {},
@@ -358,13 +358,13 @@ def main() -> int:
             print("[launch] --skip-gpu-setup set; skipping NVIDIA module load and GPU dependency install", file=sys.stderr)
         elif ssh_ready:
             try:
-                result["nvidia_modules_loaded"] = load_nvidia_modules(public_ip, args.ssh_user, key_file)
+                result["nvidia_modules_loaded"] = load_nvidia_modules(private_ip, args.ssh_user, key_file)
             except Exception as e:
                 print(f"[launch] WARNING: load_nvidia_modules failed (non-fatal): {e}", file=sys.stderr)
 
             try:
                 print("[launch] installing GPU dependencies (Docker, NCT, CUDA) ...", file=sys.stderr)
-                result["gpu_deps"] = setup_gpu_dependencies(public_ip, args.ssh_user, key_file)
+                result["gpu_deps"] = setup_gpu_dependencies(private_ip, args.ssh_user, key_file)
             except Exception as e:
                 print(f"[launch] WARNING: setup_gpu_dependencies failed (non-fatal): {e}", file=sys.stderr)
 

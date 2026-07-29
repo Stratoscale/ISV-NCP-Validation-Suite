@@ -5,13 +5,17 @@ Same as scripts/vm/reboot_instance.py, with a longer default
 wait-before-check and poll timeout — bare-metal reboot goes through a full
 hardware POST/BIOS cycle rather than a hypervisor-managed VM restart.
 
+No EIP on this cluster — SSH targets the instance's private_ip directly
+(confirmed 2026-07-29; the elastic IP path was never reachable from the
+run station).
+
 Output JSON:
 {
     "success": true,
     "platform": "bm",
     "instance_id": "i-xxx",
     "state": "running",
-    "public_ip": "172.28.x.x",
+    "private_ip": "172.31.x.x",
     "pre_uptime": "up 2 days, 3:45",
     "post_uptime": "up 1 min",
     "reboot_confirmed": true,
@@ -49,7 +53,7 @@ def main() -> int:
     parser.add_argument("--instance-id", required=True)
     parser.add_argument("--region", default=os.environ.get("AWS_REGION", "symphony"))
     parser.add_argument("--key-file", required=True)
-    parser.add_argument("--public-ip", required=True)
+    parser.add_argument("--private-ip", required=True)
     parser.add_argument("--ssh-user", default="ubuntu")
     parser.add_argument(
         "--wait-before-check",
@@ -64,7 +68,7 @@ def main() -> int:
         "success": False,
         "platform": "bm",
         "instance_id": args.instance_id,
-        "public_ip": args.public_ip,
+        "private_ip": args.private_ip,
         "key_file": args.key_file,
         "ssh_user": args.ssh_user,
         "reboot_initiated": False,
@@ -74,7 +78,7 @@ def main() -> int:
 
     try:
         print("[reboot] capturing pre-reboot uptime ...", file=sys.stderr)
-        pre_uptime = _get_uptime(args.public_ip, args.ssh_user, args.key_file)
+        pre_uptime = _get_uptime(args.private_ip, args.ssh_user, args.key_file)
         result["pre_uptime"] = pre_uptime
         print(f"[reboot] pre-reboot uptime: {pre_uptime}", file=sys.stderr)
 
@@ -92,19 +96,19 @@ def main() -> int:
         final_state = poll_instance_state(ec2, args.instance_id, ["running"], timeout=1800, interval=30)
         result["state"] = final_state
 
-        ssh_ready = wait_for_ssh(args.public_ip, args.ssh_user, args.key_file, max_attempts=60, interval=15)
+        ssh_ready = wait_for_ssh(args.private_ip, args.ssh_user, args.key_file, max_attempts=60, interval=15)
         result["ssh_ready"] = ssh_ready
 
         nvidia_ok = False
         if ssh_ready:
-            nvidia_ok = load_nvidia_modules(args.public_ip, args.ssh_user, args.key_file)
+            nvidia_ok = load_nvidia_modules(args.private_ip, args.ssh_user, args.key_file)
 
         result["nvidia_modules_loaded"] = nvidia_ok
 
         post_uptime = None
         reboot_confirmed = False
         if ssh_ready:
-            post_uptime = _get_uptime(args.public_ip, args.ssh_user, args.key_file)
+            post_uptime = _get_uptime(args.private_ip, args.ssh_user, args.key_file)
             if post_uptime and pre_uptime:
                 reboot_confirmed = post_uptime != pre_uptime
             elif post_uptime:

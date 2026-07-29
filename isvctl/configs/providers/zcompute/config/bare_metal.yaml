@@ -194,8 +194,8 @@ commands:
           - "{{region}}"
           - "--key-file"
           - "{{steps.launch_instance.key_file}}"
-          - "--public-ip"
-          - "{{steps.start_instance.public_ip}}"
+          - "--private-ip"
+          - "{{steps.start_instance.private_ip}}"
           - "--wait-before-check"
           - "180"
         timeout: 3600
@@ -251,7 +251,8 @@ commands:
         timeout: 6000
 
       # Deploy NIM container via SSH (shared script). Requires NGC_API_KEY.
-      # Uses post-power-cycle IP/key since power-cycle may reassign the public IP.
+      # Uses post-power-cycle IP/key since power-cycle may reassign the IP.
+      # No EIP on this cluster — private_ip is the reachable SSH target.
       # Unskipped 2026-07-29 for AWS parity — will fail on z2.3large (no GPU
       # to deploy NIM against); expected until instance_type is GPU-backed.
       - name: deploy_nim
@@ -259,7 +260,7 @@ commands:
         command: "python3 ../../shared/deploy_nim.py"
         args:
           - "--host"
-          - "{{steps.power_cycle_instance.public_ip}}"
+          - "{{steps.power_cycle_instance.private_ip}}"
           - "--key-file"
           - "{{steps.power_cycle_instance.key_file}}"
         timeout: 1800
@@ -269,14 +270,19 @@ commands:
         command: "python3 ../../shared/teardown_nim.py"
         args:
           - "--host"
-          - "{{steps.power_cycle_instance.public_ip}}"
+          - "{{steps.power_cycle_instance.private_ip}}"
           - "--key-file"
           - "{{steps.power_cycle_instance.key_file}}"
         timeout: 120
 
+      # timeout: instance termination poll alone allows up to 1800s, plus up
+      # to 1200s for the security-group delete retry loop (dependency/ENI
+      # release can lag bare-metal termination) — 300s default was too
+      # short and would kill this step mid-cleanup on a slow teardown.
       - name: teardown
         phase: teardown
         command: "python3 ../scripts/bare_metal/teardown.py"
+        timeout: 3300
         args:
           - "--instance-id"
           - "{{steps.launch_instance.instance_id}}"

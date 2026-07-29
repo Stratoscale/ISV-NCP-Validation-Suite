@@ -14,7 +14,7 @@ Output JSON:
     "instance_id": "i-xxx",
     "previous_state": "stopped",
     "state": "running",
-    "public_ip": "172.28.x.x",
+    "public_ip": "",
     "private_ip": "172.31.x.x",
     "ssh_ready": true,
     "nvidia_modules_loaded": true
@@ -37,7 +37,6 @@ from common.client import get_client  # noqa: E402
 from common.ec2 import (  # noqa: E402
     load_nvidia_modules,
     poll_instance_state,
-    wait_for_public_ip,
 )
 from common.ssh_utils import wait_for_ssh  # noqa: E402
 
@@ -136,27 +135,22 @@ def main() -> int:
 
             result["state"] = final_state
 
-        public_ip = wait_for_public_ip(ec2, args.instance_id, timeout=120, interval=5)
-
+        # No EIP on this cluster — private_ip is the reachable SSH target,
+        # assigned immediately at boot (no wait_for_public_ip poll needed).
         resp = ec2.describe_instances(InstanceIds=[args.instance_id])
         inst = resp["Reservations"][0]["Instances"][0]
         private_ip = inst.get("PrivateIpAddress")
 
-        if not public_ip:
-            raw = inst.get("PublicIpAddress")
-            if raw and raw not in ("", "None"):
-                public_ip = raw
-
-        result["public_ip"] = public_ip
+        result["public_ip"] = ""
         result["private_ip"] = private_ip
         result["state"] = inst["State"]["Name"]
 
         ssh_ready = False
         nvidia_ok = False
-        if public_ip:
-            ssh_ready = wait_for_ssh(public_ip, args.ssh_user, args.key_file, max_attempts=60, interval=15)
+        if private_ip:
+            ssh_ready = wait_for_ssh(private_ip, args.ssh_user, args.key_file, max_attempts=60, interval=15)
             if ssh_ready:
-                nvidia_ok = load_nvidia_modules(public_ip, args.ssh_user, args.key_file)
+                nvidia_ok = load_nvidia_modules(private_ip, args.ssh_user, args.key_file)
 
         result["ssh_ready"] = ssh_ready
         result["nvidia_modules_loaded"] = nvidia_ok

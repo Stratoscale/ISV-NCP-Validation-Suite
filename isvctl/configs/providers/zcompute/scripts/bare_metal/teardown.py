@@ -32,7 +32,7 @@ from common.client import get_client  # noqa: E402
 from common.ec2 import poll_instance_state  # noqa: E402
 
 
-def _delete_security_group(ec2: Any, sg_id: str, max_retries: int = 6, retry_delay: int = 20) -> bool:
+def _delete_security_group(ec2: Any, sg_id: str, max_retries: int = 40, retry_delay: int = 30) -> bool:
     for attempt in range(1, max_retries + 1):
         try:
             ec2.delete_security_group(GroupId=sg_id)

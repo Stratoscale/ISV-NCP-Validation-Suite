@@ -21,7 +21,7 @@ Output JSON:
     "platform": "bm",
     "instance_id": "i-xxx",
     "state": "running",
-    "public_ip": "172.28.x.x",
+    "public_ip": "",
     "key_file": "/tmp/isv-bm-test-key.pem",
     "power_cycle_initiated": true,
     "power_was_off": true,
@@ -43,7 +43,7 @@ from botocore.exceptions import ClientError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from common.client import get_client  # noqa: E402
-from common.ec2 import load_nvidia_modules, poll_instance_state, wait_for_public_ip  # noqa: E402
+from common.ec2 import load_nvidia_modules, poll_instance_state  # noqa: E402
 from common.ssh_utils import wait_for_ssh  # noqa: E402
 
 
@@ -142,20 +142,20 @@ def main() -> int:
 
         result["state"] = final_state
 
+        # No EIP on this cluster — private_ip is the reachable SSH target,
+        # assigned immediately at boot (no wait_for_public_ip poll needed).
         resp = ec2.describe_instances(InstanceIds=[args.instance_id])
         inst = resp["Reservations"][0]["Instances"][0]
         result["private_ip"] = inst.get("PrivateIpAddress")
+        result["public_ip"] = ""
 
-        fresh_ip = inst.get("PublicIpAddress") or wait_for_public_ip(ec2, args.instance_id)
-        if fresh_ip and fresh_ip not in ("", "None"):
-            result["public_ip"] = fresh_ip
-        else:
-            result["error"] = "Instance has no public IP after power-cycle (timed out polling)"
+        if not result["private_ip"]:
+            result["error"] = "Instance has no private IP after power-cycle"
             print(json.dumps(result, indent=2))
             return 1
 
         print("[power-cycle] waiting for SSH to be ready ...", file=sys.stderr)
-        ssh_ready = wait_for_ssh(result["public_ip"], args.ssh_user, args.key_file, max_attempts=60, interval=15)
+        ssh_ready = wait_for_ssh(result["private_ip"], args.ssh_user, args.key_file, max_attempts=60, interval=15)
         result["ssh_ready"] = ssh_ready
         result["recovery_seconds"] = int(time.monotonic() - start_time)
 
@@ -164,7 +164,7 @@ def main() -> int:
             print(json.dumps(result, indent=2))
             return 1
 
-        nvidia_ok = load_nvidia_modules(result["public_ip"], args.ssh_user, args.key_file)
+        nvidia_ok = load_nvidia_modules(result["private_ip"], args.ssh_user, args.key_file)
         result["nvidia_modules_loaded"] = nvidia_ok
 
         result["success"] = final_state == "running"
