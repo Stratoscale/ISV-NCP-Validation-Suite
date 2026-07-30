@@ -1,0 +1,61 @@
+#cloud-config
+ssh_authorized_keys:
+    - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCu7v5p5Ny6BS0IS9AWH7Q3ROo93JK20juziTFilYq+kEjbmD3AgumsSkBWTIuRiGlmPdI/I3vLBDrXhJvrQb88tcrLXAnU+esl5E6EQMjFy2CMQmxM0uOyf2c1EmnyB1b1Culr/ZJxznnGvRIZOXM5JazL8hKdMY0cjBlbHrA+ZAEHmOM25D4hoGom6NvkMzWeLhLEeo/FQwGEeBtRsC8mHbFr4wkGMaE9fvn6Km0x47n7ser+LfoCtdI7CccUCwNRtXLPUF/h0Pzu6PdvHf9EMBQMNwwbautZnXw37I9fssUaHMbfJ+00vUWn4IYh+xpX+hrnXaehCsYUSfRs+rHV
+users:
+    - default
+write_files:
+  - path: /usr/local/bin/wg-enroll.sh
+    permissions: "0700"
+    content: |
+      #!/bin/bash
+      set -e
+      ELASTIC_IP="31.168.231.125"
+      TOKEN="5f2bd881ce17a706089c85389e9aaedc428af37b74009bb1660db35a096cf72e"
+      VPN_VM_PUBKEY="y1lxBLsfkBX1TsYe65Rxu5LLZLYfkirZXx7VRql+MR4="
+
+      IFACE=$(ip -4 route show default | awk '{print $5; exit}')
+      IP=$(ip -4 -o addr show "$IFACE" | awk '{print $4}' | cut -d/ -f1)
+
+      umask 077
+      [ -f /etc/wireguard/private.key ] || wg genkey > /etc/wireguard/private.key
+      PRIV=$(cat /etc/wireguard/private.key)
+      PUB=$(wg pubkey <<< "$PRIV")
+
+      cat > /etc/wireguard/wg0.conf <<EOF
+      [Interface]
+      Address = ${IP}/32
+      MTU = 1400
+      PrivateKey = ${PRIV}
+
+      [Peer]
+      PublicKey = ${VPN_VM_PUBKEY}
+      Endpoint = ${ELASTIC_IP}:51820
+      AllowedIPs = 7.243.20.0/24, 7.243.41.129/32
+      PersistentKeepalive = 25
+      EOF
+
+      # --data-urlencode: wg pubkeys are base64 and contain +/= which would corrupt a raw query string
+      curl -fsS -G --retry 10 --retry-connrefused --retry-delay 6 \
+        -H "X-Token: ${TOKEN}" \
+        --data-urlencode "pubkey=${PUB}" \
+        --data-urlencode "ip=${IP}" \
+        "http://${ELASTIC_IP}:8080/"
+
+  - path: /etc/systemd/system/wg-quick@wg0.service.d/enroll.conf
+    content: |
+      [Unit]
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      ExecStartPre=/usr/local/bin/wg-enroll.sh
+
+runcmd:
+  # DPkg::Lock::Timeout: wait out unattended-upgrades instead of failing on the lock
+  - apt-get -o DPkg::Lock::Timeout=600 -q update
+  - apt-get -o DPkg::Lock::Timeout=600 -q install -y wireguard curl
+  - systemctl daemon-reload
+  - systemctl enable --now wg-quick@wg0
+  - sed -i 's/^#\?MaxAuthTries.*/MaxAuthTries 99999/' /etc/ssh/sshd_config
+  - passwd -u ubuntu || true
+  - systemctl restart ssh
