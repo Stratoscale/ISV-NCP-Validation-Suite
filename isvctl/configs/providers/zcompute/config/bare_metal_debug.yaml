@@ -198,6 +198,11 @@ commands:
           - "{{steps.launch_instance.key_file}}"
         timeout: 6000
 
+      # timeout: sum of the script's own internal budgets (NGC login, fabric
+      # manager check ~300s, docker pull up to 3600s, docker run up to
+      # 1200s, health-endpoint poll up to 1800s) can exceed 6900s worst
+      # case — 1800s was killing this step mid-pull/mid-engine-build even
+      # when it would have eventually succeeded.
       - name: deploy_nim
         phase: test
         command: "python3 ../../shared/deploy_nim.py"
@@ -206,7 +211,7 @@ commands:
           - "{{steps.power_cycle_instance.private_ip}}"
           - "--key-file"
           - "{{steps.power_cycle_instance.key_file}}"
-        timeout: 1800
+        timeout: 7200
 
       # Teardown phase intentionally disabled for this debug config — the
       # whole point is to keep iterating against the same instance.

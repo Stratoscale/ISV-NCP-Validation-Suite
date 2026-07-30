@@ -87,8 +87,9 @@ def main() -> int:
     parser.add_argument(
         "--timeout",
         type=int,
-        default=1200,
-        help="Seconds to wait for NIM health endpoint",
+        default=1800,
+        help="Seconds to wait for NIM health endpoint (first-run TensorRT "
+             "engine build can be slow, especially on new GPU architectures)",
     )
     args = parser.parse_args()
 
@@ -172,7 +173,7 @@ def main() -> int:
 
         # Explicitly pull the image before docker run to avoid silent pull failures
         print(f"Pulling NIM image: {image}", file=sys.stderr)
-        exit_code, stdout_pull, stderr_pull = run_cmd(ssh, f"docker pull {image} 2>&1", timeout=1800)
+        exit_code, stdout_pull, stderr_pull = run_cmd(ssh, f"docker pull {image} 2>&1", timeout=3600)
         if exit_code != 0:
             result["error"] = f"docker pull failed: {stderr_pull or stdout_pull}"
             print(json.dumps(result, indent=2))
