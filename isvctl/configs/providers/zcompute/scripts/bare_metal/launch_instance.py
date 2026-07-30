@@ -203,7 +203,7 @@ def main() -> int:
             if public_ip:
                 ssh_ip = result.get("private_ip")
                 ssh_ready = wait_for_ssh(
-                    ssh_ip, args.ssh_user, existing_key, max_attempts=60, interval=15
+                    ssh_ip, args.ssh_user, existing_key, max_attempts=80, interval=15
                 )
                 result["ssh_ready"] = ssh_ready
                 if ssh_ready and not args.skip_gpu_setup:
@@ -356,7 +356,7 @@ def main() -> int:
         if _refreshed_ip:
             private_ip = _refreshed_ip
 
-        ssh_ready = wait_for_ssh(private_ip, args.ssh_user, key_file, max_attempts=60, interval=15)
+        ssh_ready = wait_for_ssh(private_ip, args.ssh_user, key_file, max_attempts=80, interval=15)
 
         result = {
             "success": True,

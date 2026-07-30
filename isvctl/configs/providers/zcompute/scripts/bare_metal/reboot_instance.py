@@ -97,7 +97,7 @@ def main() -> int:
         final_state = poll_instance_state(ec2, args.instance_id, ["running"], timeout=1800, interval=30)
         result["state"] = final_state
 
-        ssh_ready = wait_for_ssh(args.private_ip, args.ssh_user, args.key_file, max_attempts=60, interval=15)
+        ssh_ready = wait_for_ssh(args.private_ip, args.ssh_user, args.key_file, max_attempts=80, interval=15)
         result["ssh_ready"] = ssh_ready
 
         nvidia_ok = False

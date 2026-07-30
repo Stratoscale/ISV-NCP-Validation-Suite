@@ -157,7 +157,7 @@ def main() -> int:
         ssh_ready = False
         nvidia_ok = False
         if private_ip:
-            ssh_ready = wait_for_ssh(private_ip, args.ssh_user, args.key_file, max_attempts=60, interval=15)
+            ssh_ready = wait_for_ssh(private_ip, args.ssh_user, args.key_file, max_attempts=80, interval=15)
             if ssh_ready:
                 nvidia_ok = load_nvidia_modules(private_ip, args.ssh_user, args.key_file)
 

@@ -182,7 +182,7 @@ def main() -> int:
         result["public_ip"] = public_ip
 
         print("[reinstall] waiting for SSH ...", file=sys.stderr)
-        ssh_ready = wait_for_ssh(result["private_ip"], args.ssh_user, args.key_file, max_attempts=60, interval=15)
+        ssh_ready = wait_for_ssh(result["private_ip"], args.ssh_user, args.key_file, max_attempts=80, interval=15)
         result["ssh_ready"] = ssh_ready
 
         if not ssh_ready:
