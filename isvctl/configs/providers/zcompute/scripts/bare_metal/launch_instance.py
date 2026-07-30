@@ -20,9 +20,13 @@ zcompute-specific notes (same as VM path):
   - CreateSecurityGroup / CreateKeyPair do not support TagSpecifications
     (common/ec2.py helpers already omit them); RunInstances does accept
     TagSpecifications (confirmed working by the VM suite).
-  - GPU driver/CUDA install commands in setup_gpu_dependencies() target
-    x86_64 Ubuntu packages — will need revisiting once real GB200 (ARM64
-    Grace-Blackwell) lab access is available.
+  - GPU driver/CUDA install commands in setup_gpu_dependencies() are
+    architecture-aware (arm64/GB200 uses NVIDIA's "sbsa" apt repo path, not
+    x86_64) and detect the containerd.io-vs-docker.io conflict seen on the
+    real GB200 AMI (2026-07-30) — confirmed manually end-to-end: nvidia-smi,
+    Docker, NVIDIA Container Toolkit, and GPU passthrough into containers
+    all working. NVIDIA Fabric Manager was investigated and confirmed
+    NOT needed/not present on this hardware — deliberately not added here.
   - Pass --skip-gpu-setup when launching a non-GPU stand-in instance type
     (e.g. z2.3large, used for integration-testing this suite's lifecycle
     mechanics before real BM/GB200 support exists) to skip the NVIDIA

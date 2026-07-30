@@ -458,11 +458,24 @@ def setup_gpu_dependencies(host: str, user: str, key_file: str) -> dict[str, boo
     )
 
     # ── 1. Docker CE ─────────────────────────────────────────────────────────
+    # Some AMIs (confirmed on the GB200 image, 2026-07-30) ship containerd.io
+    # (Docker Inc's own runtime, from a pre-configured Docker apt repo)
+    # already installed and running. docker.io (Ubuntu's own package) bundles
+    # a *different* containerd package that directly conflicts with it —
+    # apt refuses with "containerd.io : Conflicts: containerd". Detect that
+    # case and install docker-ce/docker-ce-cli instead, which is what the
+    # pre-existing containerd.io is actually meant to pair with.
     print("[setup] installing Docker ...", file=sys.stderr)
     docker_cmds = (
         "sudo apt-get update -qq && "
-        "sudo apt-get install -y --no-install-recommends "
-        "  docker.io curl wget gnupg2 ca-certificates && "
+        "sudo apt-get install -y --no-install-recommends curl wget gnupg2 ca-certificates && "
+        "if dpkg -l containerd.io 2>/dev/null | grep -q '^ii'; then "
+        "  echo '[setup] containerd.io already present — installing docker-ce/docker-ce-cli "
+        "instead of docker.io to avoid package conflict' && "
+        "  sudo apt-get install -y --no-install-recommends docker-ce docker-ce-cli docker-compose-plugin; "
+        "else "
+        "  sudo apt-get install -y --no-install-recommends docker.io; "
+        "fi && "
         "sudo systemctl enable --now docker && "
         "sudo usermod -aG docker ubuntu"
     )
@@ -477,12 +490,25 @@ def setup_gpu_dependencies(host: str, user: str, key_file: str) -> dict[str, boo
     # Install only nvcc + cuda libraries (not the full cuda-toolkit-12-6 which
     # is ~3GB and times out on slow connections). This satisfies DriverCheck's
     # cuda_toolkit subtest which checks for nvcc availability.
-    print("[setup] adding NVIDIA CUDA apt repo and installing nvcc + CUDA libs ...", file=sys.stderr)
+    #
+    # The keyring URL is architecture-specific — NVIDIA publishes ARM64
+    # server (Grace/GB200) packages under "sbsa", not "arm64" or "x86_64".
+    # Some AMIs (confirmed on the GB200 image, 2026-07-30) already have the
+    # matching repo configured (cuda-ubuntu2404-sbsa.list) — skip re-adding
+    # the keyring in that case, just install straight from it.
+    print("[setup] installing nvcc + CUDA libs (architecture-aware repo) ...", file=sys.stderr)
     cuda_cmds = (
-        # Add NVIDIA CUDA keyring + repo
-        "wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/"
+        "MACH=$(uname -m) && "
+        "if [ \"$MACH\" = \"aarch64\" ] || [ \"$MACH\" = \"arm64\" ]; then ARCH_PATH=sbsa; "
+        "else ARCH_PATH=x86_64; fi && "
+        "if ls /etc/apt/sources.list.d/cuda*.list >/dev/null 2>&1; then "
+        "  echo \"[setup] CUDA apt repo already configured, skipping keyring install\"; "
+        "else "
+        "  echo \"[setup] adding NVIDIA CUDA apt repo (arch path: ${ARCH_PATH})\" && "
+        "  wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/${ARCH_PATH}/"
         "cuda-keyring_1.1-1_all.deb -O /tmp/cuda-keyring.deb && "
-        "sudo dpkg -i /tmp/cuda-keyring.deb && "
+        "  sudo dpkg -i /tmp/cuda-keyring.deb; "
+        "fi && "
         "sudo apt-get update -qq && "
         # Install nvcc compiler + essential CUDA libraries (much smaller than cuda-toolkit-12-6)
         "sudo apt-get install -y --no-install-recommends "
@@ -504,15 +530,25 @@ def setup_gpu_dependencies(host: str, user: str, key_file: str) -> dict[str, boo
         print(f"[setup] CUDA Toolkit install failed: {r.stderr[-300:]}", file=sys.stderr)
 
     # ── 3. NVIDIA Container Toolkit ──────────────────────────────────────────
-    # Install after CUDA so the apt-get update doesn't overwrite our CUDA repo.
+    # Some AMIs (confirmed on the GB200 image, 2026-07-30) already have NCT
+    # installed and its apt repo configured. Don't blindly re-add the repo
+    # and reinstall in that case — that's redundant churn against an
+    # already-correct setup and could downgrade a newer pre-installed
+    # version. Docker itself didn't exist before this function ran though,
+    # so `nvidia-ctk runtime configure --runtime=docker` still needs to run
+    # regardless — NCT was never actually wired to a container runtime yet.
     print("[setup] installing NVIDIA Container Toolkit ...", file=sys.stderr)
     nct_cmds = (
-        "curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey "
-        "  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg && "
-        "curl -sL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list "
-        "  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list && "
-        "sudo apt-get update -qq && "
-        "sudo apt-get install -y nvidia-container-toolkit && "
+        "if command -v nvidia-ctk >/dev/null 2>&1; then "
+        "  echo '[setup] nvidia-ctk already present, skipping repo add/reinstall'; "
+        "else "
+        "  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey "
+        "    | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg && "
+        "  curl -sL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list "
+        "    | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list && "
+        "  sudo apt-get update -qq && "
+        "  sudo apt-get install -y nvidia-container-toolkit; "
+        "fi && "
         "sudo nvidia-ctk runtime configure --runtime=docker && "
         "sudo systemctl restart docker"
     )
@@ -524,11 +560,20 @@ def setup_gpu_dependencies(host: str, user: str, key_file: str) -> dict[str, boo
         print(f"[setup] NVIDIA Container Toolkit install failed: {r.stderr[-300:]}", file=sys.stderr)
 
     # ── 4. Unhold and pin nvidia-utils to the loaded kernel module version ───
-    # Unhold (we held in step 0.5 to prevent CUDA repo from upgrading).
-    # Then force-install nvidia-utils matching the actual loaded kernel module.
-    # We try both -server and non-server package name variants.
-    print("[setup] pinning nvidia-utils to loaded kernel module version ...", file=sys.stderr)
-    restore_cmds = (
+    # Only if nvidia-smi is actually broken at this point. Some AMIs
+    # (confirmed on the GB200 image, 2026-07-30) ship with nvidia-utils
+    # deliberately apt-mark-held by the vendor's own image build, already
+    # matching the loaded kernel module — unholding and force-reinstalling
+    # unconditionally would strip that protection for no reason and never
+    # restored the hold afterward (a real regression against an
+    # already-correct AMI). Skip entirely when nvidia-smi already works;
+    # only fix + re-hold when it's genuinely mismatched.
+    if _ssh("nvidia-smi --query-gpu=driver_version --format=csv,noheader", timeout=30).returncode == 0:
+        print("[setup] nvidia-smi already OK post-install — skipping nvidia-utils unhold/pin entirely", file=sys.stderr)
+        restore_cmds = None
+    else:
+        print("[setup] nvidia-smi broken post-install — pinning nvidia-utils to loaded kernel module version ...", file=sys.stderr)
+        restore_cmds = (
         # Unhold first so apt can act on these packages again.
         "dpkg -l 'nvidia-utils-*' 2>/dev/null | awk '/^ii/{print $2}' "
         "| xargs -r sudo apt-mark unhold 2>/dev/null || true && "
@@ -567,12 +612,21 @@ def setup_gpu_dependencies(host: str, user: str, key_file: str) -> dict[str, boo
         # Restart docker so the NVIDIA container runtime picks up the correct library.
         "sudo systemctl restart docker 2>/dev/null || true && "
         "echo '[setup] docker restarted after nvidia-utils pin' && "
+        # Re-apply the hold we removed above, now that the matching version
+        # is force-installed — restores the same protection the AMI had
+        # before we touched it, instead of leaving packages unheld.
+        "dpkg -l 'nvidia-utils-*' 2>/dev/null | awk '/^ii/{print $2}' "
+        "| xargs -r sudo apt-mark hold 2>/dev/null || true && "
         # Final verification — output will appear in launch_instance JSON via nvidia_diag.
         "echo \"[setup] nvidia-smi final check: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>&1 | head -1)\""
-    )
-    r = _ssh(restore_cmds, timeout=300)
-    results["nvidia_smi_accessible"] = r.returncode == 0
-    print(f"[setup] nvidia-smi restore: {r.stdout.strip()}", file=sys.stderr)
+        )
+
+    if restore_cmds is None:
+        results["nvidia_smi_accessible"] = True
+    else:
+        r = _ssh(restore_cmds, timeout=300)
+        results["nvidia_smi_accessible"] = r.returncode == 0
+        print(f"[setup] nvidia-smi restore: {r.stdout.strip()}", file=sys.stderr)
 
     # ── 5. Post-install diagnostics: verify version consistency ─────────────
     diag2 = _ssh(
