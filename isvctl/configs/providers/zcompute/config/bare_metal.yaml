@@ -295,7 +295,6 @@ commands:
           - "--delete-key-pair"
           - "--delete-security-group"
           - "{{teardown_flag}}"
-        timeout: 2400
 
       - name: verify_teardown
         phase: teardown

@@ -8,8 +8,10 @@
 ssh_pwauth: true
 chpasswd:
   expire: false
-  list: |
-    ubuntu:1q2w3e4r
+  users:
+    - name: ubuntu
+      password: 1q2w3e4r
+      type: text
 users:
     - default
 write_files:
