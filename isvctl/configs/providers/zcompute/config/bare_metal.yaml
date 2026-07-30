@@ -473,6 +473,16 @@ tests:
       - SerialConsoleCheck
       - SerialConsoleRetentionCheck
       - TopologyPlacementCheck
+      # CloudInitCheck's metadata_service subtest checks for an EC2-style
+      # HTTP metadata service at 169.254.169.254 — confirmed NOT present on
+      # zcompute bare-metal (connection refused, 2026-07-30). cloud-init.log
+      # confirms why: this platform uses DataSourceNoCloud
+      # (seed=/var/lib/cloud/seed/nocloud), not DataSourceEc2 — there's no
+      # HTTP metadata service to query by design, not a bug. The cloud_init
+      # subtest itself (cloud-init status == done) does pass on its own, but
+      # CloudInitCheck fails as a whole if any subtest fails, so the whole
+      # check has to be excluded rather than just the one subtest.
+      - CloudInitCheck
       # z2.3large has no InfiniBand HCAs either (no "gpu" marker, so not
       # caught by the exclude above). TEMPORARY — remove once instance_type
       # is GPU/IB-backed.

@@ -117,8 +117,14 @@ commands:
           - "{{region}}"
         timeout: 60
 
+      # stop/start/reboot/power-cycle all skip:true for this run — on this
+      # platform, powering off a bare-metal instance was confirmed to
+      # actually DELETE it (2026-07-30, Ofir), not stop/preserve it like a
+      # VM. This run is based on an existing instance we don't want to
+      # touch destructively, so nothing that changes its power state runs.
       - name: stop_instance
         phase: test
+        skip: true
         command: "python3 ../scripts/bare_metal/stop_instance.py"
         args:
           - "--instance-id"
@@ -129,6 +135,7 @@ commands:
 
       - name: start_instance
         phase: test
+        skip: true
         command: "python3 ../scripts/bare_metal/start_instance.py"
         args:
           - "--instance-id"
@@ -143,6 +150,7 @@ commands:
 
       - name: reboot_instance
         phase: test
+        skip: true
         command: "python3 ../scripts/bare_metal/reboot_instance.py"
         args:
           - "--instance-id"
@@ -152,13 +160,14 @@ commands:
           - "--key-file"
           - "{{steps.launch_instance.key_file}}"
           - "--private-ip"
-          - "{{steps.start_instance.private_ip}}"
+          - "{{steps.launch_instance.private_ip}}"
           - "--wait-before-check"
           - "180"
         timeout: 3600
 
       - name: power_cycle_instance
         phase: test
+        skip: true
         command: "python3 ../scripts/bare_metal/power_cycle_instance.py"
         args:
           - "--instance-id"
@@ -203,14 +212,17 @@ commands:
       # 1200s, health-endpoint poll up to 1800s) can exceed 6900s worst
       # case — 1800s was killing this step mid-pull/mid-engine-build even
       # when it would have eventually succeeded.
+      # host/key-file now point at launch_instance directly, not
+      # power_cycle_instance — that step is skip:true in this config, so
+      # its output doesn't exist.
       - name: deploy_nim
         phase: test
         command: "python3 ../../shared/deploy_nim.py"
         args:
           - "--host"
-          - "{{steps.power_cycle_instance.private_ip}}"
+          - "{{steps.launch_instance.private_ip}}"
           - "--key-file"
-          - "{{steps.power_cycle_instance.key_file}}"
+          - "{{steps.launch_instance.key_file}}"
         timeout: 7200
 
       # Teardown phase intentionally disabled for this debug config — the
@@ -221,9 +233,9 @@ commands:
         command: "python3 ../../shared/teardown_nim.py"
         args:
           - "--host"
-          - "{{steps.power_cycle_instance.private_ip}}"
+          - "{{steps.launch_instance.private_ip}}"
           - "--key-file"
-          - "{{steps.power_cycle_instance.key_file}}"
+          - "{{steps.launch_instance.key_file}}"
         timeout: 120
 
       - name: teardown
@@ -265,7 +277,15 @@ tests:
   # hardware, not the mechanics-only pass bare_metal.yaml defaults to.
   exclude:
     markers: []
-    tests: []
+    # CloudInitCheck's metadata_service subtest checks for an EC2-style HTTP
+    # metadata service at 169.254.169.254 — confirmed NOT present on
+    # zcompute bare-metal (connection refused, 2026-07-30). cloud-init.log
+    # confirms why: DataSourceNoCloud, not DataSourceEc2 — no HTTP metadata
+    # service by design, not a bug. Unlike the GPU-marker exclusions this
+    # config deliberately unlocks, this one isn't hardware-dependent, so it
+    # stays excluded here too.
+    tests:
+      - CloudInitCheck
 
   # GPU-marked checks all resolve their SSH host the same way ssh/host_os/
   # ethernet do (BaseValidation.get_ssh_config prefers public_ip over
