@@ -40,32 +40,56 @@ def get_ssh_client(
     user: str,
     key_path: str,
     timeout: int = 30,
+    retries: int = 3,
+    retry_interval: float = 5,
 ) -> paramiko.SSHClient:
     """Create SSH client connection using paramiko.
+
+    Retries on connection failure, since a single flaky attempt (transient
+    network blip, host briefly under load) shouldn't fail an entire check.
 
     Args:
         host: Hostname or IP address to connect to
         user: SSH username
         key_path: Path to SSH private key file
-        timeout: Connection timeout in seconds
+        timeout: Connection timeout in seconds, per attempt
+        retries: Number of connection attempts before giving up
+        retry_interval: Seconds to wait between attempts
 
     Returns:
         Connected paramiko SSHClient instance
     """
     import paramiko
 
-    ssh_client = paramiko.SSHClient()
-    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        ssh_client = paramiko.SSHClient()
+        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            ssh_client.connect(
+                hostname=host,
+                username=user,
+                key_filename=key_path,
+                timeout=timeout,
+                allow_agent=False,
+                look_for_keys=False,
+            )
+            return ssh_client
+        except (OSError, paramiko.SSHException) as e:
+            last_error = e
+            ssh_client.close()
+            log.warning(
+                "SSH connect to %s failed (attempt %d/%d): %s",
+                host,
+                attempt,
+                retries,
+                e,
+            )
+            if attempt < retries:
+                time.sleep(retry_interval)
 
-    ssh_client.connect(
-        hostname=host,
-        username=user,
-        key_filename=key_path,
-        timeout=timeout,
-        allow_agent=False,
-        look_for_keys=False,
-    )
-    return ssh_client
+    assert last_error is not None
+    raise last_error
 
 
 def run_ssh_command(
