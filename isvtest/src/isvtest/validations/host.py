@@ -1401,7 +1401,18 @@ class TrainingCheck(BaseValidation):
                 f"echo {script_b64} | base64 -d > /tmp/_isv_train.py && "
                 f"torchrun --nproc_per_node={gpu_count} /tmp/_isv_train.py"
             )
-            env_vars = f"TRAIN_STEPS={steps} TRAIN_BATCH_SIZE={batch_size} TRAIN_HIDDEN_SIZE={hidden_size}"
+            # NCCL_NVLS_ENABLE=0: on GB200/Blackwell, NCCL's NVLS (NVLink SHARP
+            # multicast) transport fails with a spurious "Cuda failure 2 'out
+            # of memory'" during ncclCommInitRank - confirmed via NCCL_DEBUG=INFO
+            # (transport/nvls.cc:254) that this is a multicast memory object
+            # allocation failure, not actual VRAM exhaustion (nvidia-smi showed
+            # 0MiB used). Disabling NVLS falls back to standard ring/tree
+            # algorithms, which work correctly. Matches Anton's own working
+            # GB200 NCCL config (2026-08-02).
+            env_vars = (
+                f"TRAIN_STEPS={steps} TRAIN_BATCH_SIZE={batch_size} "
+                f"TRAIN_HIDDEN_SIZE={hidden_size} NCCL_NVLS_ENABLE=0"
+            )
 
             if container_runtime == "python":
                 cmd = f"bash -c '{env_vars} {write_and_run}'"
@@ -1409,7 +1420,7 @@ class TrainingCheck(BaseValidation):
                 cmd = (
                     f"docker run --rm --gpus all --ipc=host "
                     f"-e TRAIN_STEPS={steps} -e TRAIN_BATCH_SIZE={batch_size} "
-                    f"-e TRAIN_HIDDEN_SIZE={hidden_size} "
+                    f"-e TRAIN_HIDDEN_SIZE={hidden_size} -e NCCL_NVLS_ENABLE=0 "
                     f"{image} bash -c '{write_and_run}'"
                 )
 
