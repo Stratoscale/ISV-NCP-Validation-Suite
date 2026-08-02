@@ -356,26 +356,39 @@ class VcpuPinningCheck(BaseValidation):
             if exit_code == 0 and "no_numa" not in stdout:
                 numa_lines = [line.strip() for line in stdout.strip().split("\n") if line.strip()]
                 numa_nodes = len(numa_lines)
-                # Check all NUMA nodes have CPUs assigned (balanced)
-                all_have_cpus = all(":" in line and line.split(":")[-1].strip() != "" for line in numa_lines)
-                self.report_subtest(
-                    "numa_topology",
-                    all_have_cpus,
-                    f"{numa_nodes} NUMA node(s), all populated: {all_have_cpus}",
-                )
 
-                # Report per-node detail
+                # Some architectures (e.g. Grace-Blackwell) legitimately report
+                # memory-only NUMA nodes (GPU HBM, NVLink C2C memory) with zero
+                # CPUs - that's expected topology, not a pinning defect. A real
+                # pinning problem shows up as vCPUs going unaccounted for, so
+                # check the total across nodes rather than requiring every
+                # single declared node to be non-empty.
+                node_cpu_counts: dict[str, int] = {}
                 for line in numa_lines:
                     parts = line.split(":")
                     if len(parts) == 2:
                         node_name = parts[0].strip().replace("NUMA ", "").replace(" CPU(s)", "")
                         cpus = parts[1].strip()
-                        cpu_cnt = parse_cpu_range_count(cpus) if cpus else 0
-                        self.report_subtest(
-                            f"numa_{node_name}",
-                            cpu_cnt > 0,
-                            f"{node_name}: CPUs {cpus} ({cpu_cnt} cores)",
-                        )
+                        node_cpu_counts[node_name] = parse_cpu_range_count(cpus) if cpus else 0
+
+                total_pinned = sum(node_cpu_counts.values())
+                all_have_cpus = total_pinned == vcpu_count
+                self.report_subtest(
+                    "numa_topology",
+                    all_have_cpus,
+                    f"{numa_nodes} NUMA node(s), {total_pinned}/{vcpu_count} vCPUs accounted for",
+                )
+
+                # Report per-node detail; a node with 0 CPUs is informational
+                # (memory-only), not a failure, as long as the total above
+                # accounts for every vCPU.
+                for node_name, cpu_cnt in node_cpu_counts.items():
+                    self.report_subtest(
+                        f"numa_{node_name}",
+                        True,
+                        f"{node_name}: {cpu_cnt} core(s)" if cpu_cnt else f"{node_name}: memory-only (no CPUs)",
+                        skipped=(cpu_cnt == 0),
+                    )
             else:
                 self.report_subtest("numa_topology", True, "Single NUMA node (no NUMA)")
 
