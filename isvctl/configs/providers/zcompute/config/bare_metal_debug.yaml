@@ -288,10 +288,13 @@ tests:
     # returns "Instance ... is not ready (HTTP 409)" on zcompute bare-metal —
     # confirmed across multiple instances/runs, a platform gap (console
     # output isn't implemented/ready), not something our code can fix.
+    # TopologyPlacementCheck: placement groups not supported on zcompute -
+    # same category of permanent platform gap, confirmed across runs.
     tests:
       - CloudInitCheck
       - SerialConsoleCheck
       - SerialConsoleRetentionCheck
+      - TopologyPlacementCheck
 
   # GPU-marked checks all resolve their SSH host the same way ssh/host_os/
   # ethernet do (BaseValidation.get_ssh_config prefers public_ip over
