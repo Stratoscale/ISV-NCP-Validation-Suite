@@ -359,6 +359,12 @@ tests:
         InfiniBandCheck:
           host: "{{steps.describe_instance.private_ip}}"
           key_file: "{{steps.describe_instance.key_file}}"
+          # 6 mlx5 CAs total: mlx5_0/1/3/4 are the real IB fabric NICs, mlx5_2
+          # is the DPU's first port (also Active) — mlx5_5 is the DPU's 2nd
+          # port, confirmed uncabled/expected-down (Ofir, 2026-07-30). With
+          # expected_ports set, InfiniBandCheck only fails below this count,
+          # not on any single port being down.
+          expected_ports: 5
 
     cpu_info:
       step: describe_instance

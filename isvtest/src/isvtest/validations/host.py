@@ -1635,10 +1635,15 @@ class InfiniBandCheck(BaseValidation):
                     is_active = state == "Active"
                     if is_active:
                         active_ports += 1
+                    # When expected_ports is set, a specific port being down is not
+                    # itself a failure - only falling short of expected_ports is (see
+                    # the port_count subtest below). Without expected_ports, fall back
+                    # to the strict "every port must be Active" behavior.
                     self.report_subtest(
                         f"{current_ca}_port{current_port}",
                         is_active,
                         f"{current_ca} port {current_port}: {state}",
+                        skipped=bool(expected_ports) and not is_active,
                     )
 
             if total_ports == 0:
