@@ -348,6 +348,25 @@ tests:
           host: "{{steps.describe_instance.private_ip}}"
           key_file: "{{steps.describe_instance.key_file}}"
 
+    # InfiniBandCheck/CpuInfoCheck were missing this override (unlike every
+    # other check on this list) — they were resolving to describe_instance's
+    # public_ip (the EIP), which isn't reachable from the run station, and
+    # timing out on connect. Confirmed 2026-08-02: same private_ip fix as
+    # the rest of this list resolves it.
+    infiniband:
+      step: describe_instance
+      checks:
+        InfiniBandCheck:
+          host: "{{steps.describe_instance.private_ip}}"
+          key_file: "{{steps.describe_instance.key_file}}"
+
+    cpu_info:
+      step: describe_instance
+      checks:
+        CpuInfoCheck:
+          host: "{{steps.describe_instance.private_ip}}"
+          key_file: "{{steps.describe_instance.key_file}}"
+
     container_runtime:
       step: describe_instance
       checks:
