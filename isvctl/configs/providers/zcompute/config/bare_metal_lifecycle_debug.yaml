@@ -144,7 +144,11 @@ commands:
           - "{{steps.launch_instance.key_file}}"
           - "--pre-start-delay"
           - "600"
-        timeout: 13500
+        # Worst case (4 bounce-back retries): 600 pre-delay + 4*2700 poll +
+        # 3*300 between-retry wait + 120 EIP wait + 1200 ssh wait = 13620s -
+        # that's already over the old 13500s budget with zero margin left,
+        # so bumped to give real headroom.
+        timeout: 15000
 
       - name: reboot_instance
         phase: test
@@ -202,7 +206,10 @@ commands:
           - "{{region}}"
           - "--key-file"
           - "{{steps.launch_instance.key_file}}"
-        timeout: 6000
+        # Internal budget (no retries even): 1800 stop poll + 300*3 volume
+        # polls + 2700 start poll + 1200 ssh wait = 6600s - that's already
+        # over the old 6000s timeout in a normal run, not just worst case.
+        timeout: 8100
 
       - name: deploy_nim
         phase: test
