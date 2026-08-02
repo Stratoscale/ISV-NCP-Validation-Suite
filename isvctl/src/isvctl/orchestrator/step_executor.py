@@ -178,10 +178,15 @@ class StepResults:
     accumulated_outputs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def add_step(self, result: StepResult) -> None:
-        """Add a step result and update overall success."""
+        """Record a step result.
+
+        Does not touch ``success`` on failure - the caller (``execute_steps``)
+        is responsible for that, since only it knows whether the step is
+        configured with ``continue_on_failure`` (a failing continue_on_failure
+        step must not flip overall success, only skip:true steps are
+        guaranteed successful here).
+        """
         self.steps.append(result)
-        if not result.success:
-            self.success = False
         if result.output:
             self.accumulated_outputs[result.name] = result.output
 
