@@ -38,7 +38,7 @@ commands:
         command: "python3 ../scripts/bare_metal/launch_instance.py"
         args:
           - "--name"
-          - "isv-bm-test-gpu-lifecycle-3"
+          - "isv-bm-test-gpu-lifecycle-4"
           - "--instance-type"
           - "{{instance_type}}"
           - "--region"
