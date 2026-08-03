@@ -201,7 +201,11 @@ OUTPUT_SCHEMAS: dict[str, dict[str, Any]] = {
                 "enum": ["pending", "running", "stopped", "terminated"],
                 "description": "Instance state",
             },
-            "public_ip": {"type": "string", "description": "Public IP address"},
+            # Nullable: a reused instance may genuinely have no public IP
+            # right now (EIP not currently associated) - _reuse_instance()
+            # returns null rather than omitting the field or fabricating a
+            # value (confirmed 2026-08-03).
+            "public_ip": {"type": ["string", "null"], "description": "Public IP address"},
             "private_ip": {"type": "string", "description": "Private IP address"},
             "instance_type": {"type": "string", "description": "Instance type/size"},
             "ssh_user": {"type": "string", "description": "SSH username"},
