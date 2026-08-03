@@ -98,6 +98,24 @@ def wait_for_public_ip(
     return None
 
 
+def _is_valid_private_key(key_file: str) -> bool:
+    """Check whether a file on disk is a loadable SSH private key.
+
+    A PEM file can exist on disk but be unusable (truncated by a bad
+    copy/paste, accidentally overwritten, etc.) — existence alone doesn't
+    mean it will actually authenticate.
+    """
+    try:
+        result = subprocess.run(
+            ["ssh-keygen", "-y", "-f", key_file],
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def create_key_pair(
     ec2: Any,
     key_name: str,
@@ -137,17 +155,20 @@ def create_key_pair(
             raise
 
     if exists_in_ec2:
-        if os.path.exists(key_file):
+        if os.path.exists(key_file) and _is_valid_private_key(key_file):
             print(
                 f"[ec2] reusing existing key pair '{key_name}' and PEM {key_file}",
                 file=sys.stderr,
             )
             return key_file
         else:
-            # PEM is gone — delete the key pair so we can recreate it with new material.
+            # PEM is missing, or present but corrupted (e.g. a bad copy/paste
+            # left a truncated file on disk — confirmed to happen in practice,
+            # 2026-08-03) — either way, delete the key pair so we can recreate
+            # it with new, actually-usable material.
+            reason = "PEM not found locally" if not os.path.exists(key_file) else "local PEM is corrupted/unusable"
             print(
-                f"[ec2] key pair '{key_name}' exists in EC2 but PEM not found locally; "
-                "deleting and recreating.",
+                f"[ec2] key pair '{key_name}' exists in EC2 but {reason}; deleting and recreating.",
                 file=sys.stderr,
             )
             ec2.delete_key_pair(KeyName=key_name)
