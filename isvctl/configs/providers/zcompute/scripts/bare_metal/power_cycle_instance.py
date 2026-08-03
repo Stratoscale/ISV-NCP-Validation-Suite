@@ -160,6 +160,15 @@ def main() -> int:
 
         print("[power-cycle] waiting for SSH to be ready ...", file=sys.stderr)
         ssh_ready = wait_for_ssh(result["private_ip"], args.ssh_user, args.key_file, max_attempts=80, interval=15)
+        if not ssh_ready:
+            # Retry once more before giving up rather than failing on a
+            # single SSH-wait window (Aviv, 2026-08-03).
+            print(
+                "[power-cycle] SSH did not respond; retrying SSH wait once more ...",
+                file=sys.stderr,
+            )
+            time.sleep(60)
+            ssh_ready = wait_for_ssh(result["private_ip"], args.ssh_user, args.key_file, max_attempts=80, interval=15)
         result["ssh_ready"] = ssh_ready
         result["recovery_seconds"] = int(time.monotonic() - start_time)
 

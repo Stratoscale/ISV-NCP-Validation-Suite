@@ -158,12 +158,22 @@ def main() -> int:
         nvidia_ok = False
         if private_ip:
             ssh_ready = wait_for_ssh(private_ip, args.ssh_user, args.key_file, max_attempts=80, interval=15)
+            if not ssh_ready:
+                # Instance state says running, but SSH never came up - retry
+                # once more before giving up rather than silently reporting
+                # success based on instance state alone (Aviv, 2026-08-03).
+                print(
+                    "[start] instance running but SSH did not respond; retrying SSH wait once more ...",
+                    file=sys.stderr,
+                )
+                time.sleep(60)
+                ssh_ready = wait_for_ssh(private_ip, args.ssh_user, args.key_file, max_attempts=80, interval=15)
             if ssh_ready:
                 nvidia_ok = load_nvidia_modules(private_ip, args.ssh_user, args.key_file)
 
         result["ssh_ready"] = ssh_ready
         result["nvidia_modules_loaded"] = nvidia_ok
-        result["success"] = result.get("state") == "running"
+        result["success"] = result.get("state") == "running" and ssh_ready
 
     except ClientError as e:
         result["error"] = str(e)

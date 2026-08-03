@@ -122,8 +122,9 @@ commands:
           - "--pre-start-delay"
           - "600"
         # See bare_metal_lifecycle_debug.yaml for the worst-case math behind
-        # this number (13620s worst case vs the old 13500s timeout).
-        timeout: 15000
+        # this number - now accounts for start_instance.py's SSH-wait retry
+        # (2026-08-03).
+        timeout: 16200
 
       - name: reboot_instance
         phase: test
@@ -139,7 +140,9 @@ commands:
           - "{{steps.launch_instance.private_ip}}"
           - "--wait-before-check"
           - "180"
-        timeout: 3600
+        # reboot_instance.py now retries the ssh wait once on failure
+        # (2026-08-03) - bumped from 3600 for the added retry's worst case.
+        timeout: 5400
 
       - name: power_cycle_instance
         phase: test
@@ -153,7 +156,9 @@ commands:
           - "{{steps.launch_instance.key_file}}"
           - "--pre-start-delay"
           - "600"
-        timeout: 16200
+        # power_cycle_instance.py now retries the ssh wait once on failure
+        # (2026-08-03) - bumped from 16200 for the added retry's worst case.
+        timeout: 18000
 
       - name: describe_instance
         phase: test

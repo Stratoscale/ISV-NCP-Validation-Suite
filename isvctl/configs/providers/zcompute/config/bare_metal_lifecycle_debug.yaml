@@ -145,10 +145,10 @@ commands:
           - "--pre-start-delay"
           - "600"
         # Worst case (4 bounce-back retries): 600 pre-delay + 4*2700 poll +
-        # 3*300 between-retry wait + 120 EIP wait + 1200 ssh wait = 13620s -
-        # that's already over the old 13500s budget with zero margin left,
-        # so bumped to give real headroom.
-        timeout: 15000
+        # 3*300 between-retry wait + 120 EIP wait + up to 2*1200 ssh wait
+        # (start_instance.py now retries the ssh wait once, 2026-08-03) +
+        # 60s between ssh retries = 15780s - bumped with real margin.
+        timeout: 16200
 
       - name: reboot_instance
         phase: test
@@ -164,7 +164,10 @@ commands:
           - "{{steps.launch_instance.private_ip}}"
           - "--wait-before-check"
           - "180"
-        timeout: 3600
+        # reboot_instance.py now retries the ssh wait once on failure
+        # (2026-08-03) - up to 2*1200s ssh wait + 180 wait-before-check +
+        # 1800 poll + 60 between-retry = 4440s worst case, bumped from 3600.
+        timeout: 5400
 
       - name: power_cycle_instance
         phase: test
@@ -178,7 +181,10 @@ commands:
           - "{{steps.launch_instance.key_file}}"
           - "--pre-start-delay"
           - "600"
-        timeout: 16200
+        # power_cycle_instance.py now retries the ssh wait once on failure
+        # (2026-08-03) - similar math to start_instance above, bumped from
+        # 16200 for the added retry's worst-case time.
+        timeout: 18000
 
       - name: describe_instance
         phase: test
