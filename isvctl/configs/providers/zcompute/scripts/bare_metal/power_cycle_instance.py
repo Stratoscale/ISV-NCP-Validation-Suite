@@ -150,7 +150,12 @@ def main() -> int:
         inst = resp["Reservations"][0]["Instances"][0]
         result["private_ip"] = inst.get("PrivateIpAddress")
 
-        fresh_ip = inst.get("PublicIpAddress") or wait_for_public_ip(ec2, args.instance_id)
+        # Default wait_for_public_ip timeout (120s) is fine for a plain
+        # start (confirmed working in this same run) but too short for a
+        # full power-cycle's harder reset - confirmed live 2026-08-03 that
+        # 120s timed out here even though the instance came back fully
+        # healthy shortly after (SSH/GPU checks succeeded moments later).
+        fresh_ip = inst.get("PublicIpAddress") or wait_for_public_ip(ec2, args.instance_id, timeout=600, interval=5)
         if fresh_ip and fresh_ip not in ("", "None"):
             result["public_ip"] = fresh_ip
         else:
