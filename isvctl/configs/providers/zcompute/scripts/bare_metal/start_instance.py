@@ -107,13 +107,37 @@ def main() -> int:
             RESOURCE_WAIT_SECONDS = 300
             final_state = "stopped"
 
+            last_start_error: ClientError | None = None
             for attempt in range(MAX_START_RETRIES):
                 print(
                     f"[start] calling start_instances (attempt {attempt + 1}/{MAX_START_RETRIES}) ...",
                     file=sys.stderr,
                 )
-                ec2.start_instances(InstanceIds=[args.instance_id])
-                result["start_initiated"] = True
+                # start_instances itself can transiently fail right after a
+                # stop (e.g. InvalidInstanceID.NotFound - confirmed live
+                # 2026-08-03, the backend hadn't fully re-registered the
+                # instance as available yet). Previously this wasn't caught
+                # here at all, so it escaped to the outer handler and failed
+                # the whole script on the very first attempt with zero
+                # retries. Now treated the same as a "bounced back to
+                # stopped" result: retry with the same backoff.
+                try:
+                    ec2.start_instances(InstanceIds=[args.instance_id])
+                    result["start_initiated"] = True
+                except ClientError as e:
+                    last_start_error = e
+                    code = e.response.get("Error", {}).get("Code", "")
+                    print(
+                        f"[start] start_instances call failed ({code}): {e}",
+                        file=sys.stderr,
+                    )
+                    if attempt < MAX_START_RETRIES - 1:
+                        print(f"[start] retrying in {RESOURCE_WAIT_SECONDS}s ...", file=sys.stderr)
+                        time.sleep(RESOURCE_WAIT_SECONDS)
+                        continue
+                    else:
+                        print("[start] exhausted retries; instance could not start.", file=sys.stderr)
+                        break
 
                 # Bare metal needs a longer per-attempt budget: full POST/BIOS/OS boot.
                 final_state = poll_instance_state(
@@ -133,6 +157,12 @@ def main() -> int:
                     time.sleep(RESOURCE_WAIT_SECONDS)
                 else:
                     print("[start] exhausted retries; instance could not start.", file=sys.stderr)
+
+            if final_state != "running" and last_start_error is not None and not result["start_initiated"]:
+                result["error"] = str(last_start_error)
+                result["error_code"] = last_start_error.response.get("Error", {}).get("Code", "")
+                print(json.dumps(result, indent=2))
+                return 1
 
             result["state"] = final_state
 
