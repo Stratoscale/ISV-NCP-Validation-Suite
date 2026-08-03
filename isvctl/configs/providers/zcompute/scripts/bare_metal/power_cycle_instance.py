@@ -142,26 +142,28 @@ def main() -> int:
 
         result["state"] = final_state
 
-        # Poll for the EIP to reappear post-power-cycle — private_ip is
-        # still the actual SSH target, but public_ip presence confirms the
-        # network survived (EIP association is what causes NICo to attach
-        # a network interface at all — confirmed 2026-07-29).
         resp = ec2.describe_instances(InstanceIds=[args.instance_id])
         inst = resp["Reservations"][0]["Instances"][0]
         result["private_ip"] = inst.get("PrivateIpAddress")
 
-        # Default wait_for_public_ip timeout (120s) is fine for a plain
-        # start (confirmed working in this same run) but too short for a
-        # full power-cycle's harder reset - confirmed live 2026-08-03 that
-        # 120s timed out here even though the instance came back fully
-        # healthy shortly after (SSH/GPU checks succeeded moments later).
-        fresh_ip = inst.get("PublicIpAddress") or wait_for_public_ip(ec2, args.instance_id, timeout=600, interval=5)
+        # public_ip is informational only, not a gate - the EIP is confirmed
+        # unreachable from this run station anyway (2026-07-29), private_ip
+        # is the only thing actually used for SSH below. Confirmed live
+        # 2026-08-03: this used to hard-fail here if the EIP hadn't
+        # reappeared yet, even though the instance was already fully
+        # reachable via private_ip at that exact moment (SSH/GPU checks
+        # succeeded against it moments later in the same run). Don't repeat
+        # that mistake - wait a bit, log what happened, but always proceed
+        # to the real check (SSH) regardless of how this turns out.
+        fresh_ip = inst.get("PublicIpAddress") or wait_for_public_ip(ec2, args.instance_id, timeout=120, interval=5)
         if fresh_ip and fresh_ip not in ("", "None"):
             result["public_ip"] = fresh_ip
         else:
-            result["error"] = "Instance has no public IP after power-cycle (timed out polling)"
-            print(json.dumps(result, indent=2))
-            return 1
+            print(
+                "[power-cycle] no public IP yet after power-cycle - continuing anyway, "
+                "private_ip is what actually matters",
+                file=sys.stderr,
+            )
 
         print("[power-cycle] waiting for SSH to be ready ...", file=sys.stderr)
         ssh_ready = wait_for_ssh(result["private_ip"], args.ssh_user, args.key_file, max_attempts=80, interval=15)
