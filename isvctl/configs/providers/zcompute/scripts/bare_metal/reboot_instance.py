@@ -97,7 +97,21 @@ def main() -> int:
         final_state = poll_instance_state(ec2, args.instance_id, ["running"], timeout=1800, interval=30)
         result["state"] = final_state
 
-        ssh_ready = wait_for_ssh(args.private_ip, args.ssh_user, args.key_file, max_attempts=80, interval=15)
+        # Re-fetch the private IP rather than trusting the one passed in -
+        # confirmed 2026-08-03 that it can change across a stop/start (and
+        # plausibly across a reboot too), leaving --private-ip stale and
+        # wait_for_ssh polling an address nothing is listening on anymore.
+        resp = ec2.describe_instances(InstanceIds=[args.instance_id])
+        inst = resp["Reservations"][0]["Instances"][0]
+        private_ip = inst.get("PrivateIpAddress") or args.private_ip
+        if private_ip != args.private_ip:
+            print(
+                f"[reboot] private_ip changed after reboot: {args.private_ip} -> {private_ip}",
+                file=sys.stderr,
+            )
+        result["private_ip"] = private_ip
+
+        ssh_ready = wait_for_ssh(private_ip, args.ssh_user, args.key_file, max_attempts=80, interval=15)
         if not ssh_ready:
             # Retry once more before giving up rather than failing on a
             # single SSH-wait window (Aviv, 2026-08-03).
@@ -106,19 +120,19 @@ def main() -> int:
                 file=sys.stderr,
             )
             time.sleep(60)
-            ssh_ready = wait_for_ssh(args.private_ip, args.ssh_user, args.key_file, max_attempts=80, interval=15)
+            ssh_ready = wait_for_ssh(private_ip, args.ssh_user, args.key_file, max_attempts=80, interval=15)
         result["ssh_ready"] = ssh_ready
 
         nvidia_ok = False
         if ssh_ready:
-            nvidia_ok = load_nvidia_modules(args.private_ip, args.ssh_user, args.key_file)
+            nvidia_ok = load_nvidia_modules(private_ip, args.ssh_user, args.key_file)
 
         result["nvidia_modules_loaded"] = nvidia_ok
 
         post_uptime = None
         reboot_confirmed = False
         if ssh_ready:
-            post_uptime = _get_uptime(args.private_ip, args.ssh_user, args.key_file)
+            post_uptime = _get_uptime(private_ip, args.ssh_user, args.key_file)
             if post_uptime and pre_uptime:
                 reboot_confirmed = post_uptime != pre_uptime
             elif post_uptime:
