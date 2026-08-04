@@ -1,8 +1,12 @@
-# zcompute Bare Metal — DEBUG/iterative config
+# zcompute Bare Metal — FULL SUITE config (all checks, reuse-safe)
 #
 # Same suite as bare_metal.yaml, but for iterating against a single
 # persistent instance instead of paying the ~30min create+network-attach
-# cost on every run:
+# cost on every run. This is our main, comprehensive full-suite config -
+# it's what produced the clean, uploaded 27/27 result (Test Run 372) and
+# is meant to be run again before any future upload. (Formerly named
+# bare_metal_debug.yaml - renamed 2026-08-04 since it's not just a
+# throwaway debug config, it's the real full-suite check.)
 #   - launch_instance always reuses ZCOMPUTE_BM_INSTANCE_ID/KEY_FILE (the
 #     script itself already supports this — no config difference needed
 #     there, just export those env vars before running)
@@ -24,7 +28,7 @@
 #   export ZCOMPUTE_BM_KEY_FILE=/tmp/isv-bm-test-key.pem
 #   export NGC_API_KEY=...                   # needed for deploy_nim to do anything
 #   PYTHONPATH=isvctl/src:isvtest/src:isvreporter/src \
-#     uv run isvctl test run -f isvctl/configs/providers/zcompute/config/bare_metal_debug.yaml -v
+#     uv run isvctl test run -f isvctl/configs/providers/zcompute/config/bare_metal_full_suite.yaml -v
 
 import:
   - ./bare_metal.yaml
@@ -270,8 +274,8 @@ commands:
         timeout: 120
 
 tests:
-  cluster_name: "zcompute-bm-validation-debug"
-  description: "zcompute Bare Metal (BMaaS) DEBUG run — persistent instance, full GPU checks, no teardown"
+  cluster_name: "zcompute-bm-validation-full-suite"
+  description: "zcompute Bare Metal (BMaaS) full suite — persistent instance, full GPU checks, no teardown"
 
   # Unlock everything — this is a real full-cost run against real GB200
   # hardware, not the mechanics-only pass bare_metal.yaml defaults to.

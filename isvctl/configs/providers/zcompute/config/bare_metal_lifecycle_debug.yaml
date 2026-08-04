@@ -1,6 +1,6 @@
 # zcompute Bare Metal — LIFECYCLE debug config
 #
-# Same as bare_metal_debug.yaml (all our GB200 fixes: private_ip host
+# Same as bare_metal_full_suite.yaml (all our GB200 fixes: private_ip host
 # overrides, expected_gpus: 4, expected_ports: 5, exclude list), except
 # this one actually exercises stop/start/reboot/power-cycle/reinstall
 # instead of skipping them.
@@ -120,7 +120,7 @@ commands:
           - "{{region}}"
         timeout: 60
 
-      # Unskipped (unlike bare_metal_debug.yaml) - this is the whole point
+      # Unskipped (unlike bare_metal_full_suite.yaml) - this is the whole point
       # of this config. Only ever run against a fresh, disposable instance.
       - name: stop_instance
         phase: test
@@ -282,7 +282,7 @@ tests:
 
   exclude:
     markers: []
-    # Same permanent platform gaps as bare_metal_debug.yaml.
+    # Same permanent platform gaps as bare_metal_full_suite.yaml.
     tests:
       - CloudInitCheck
       - SerialConsoleCheck
