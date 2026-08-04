@@ -12,6 +12,10 @@
 #     there, just export those env vars before running)
 #   - Full GPU setup runs on launch (--skip-gpu-setup removed) so
 #     GpuCheck/GpuStressCheck/NcclCheck etc. mean something
+#   - stop/start/reboot/power_cycle are real (not skip:true) — this is now
+#     a genuinely full run, lifecycle included. reinstall_instance stays
+#     skip:true, matching AWS's own reference config (which skips it too).
+#     Only ever point this at a disposable instance, never the "golden" one.
 #   - teardown / verify_teardown / teardown_nim are all skip:true — this
 #     config never tears anything down, on purpose
 #   - gpu marker + all excluded-by-name checks are unlocked (nothing
@@ -121,14 +125,17 @@ commands:
           - "{{region}}"
         timeout: 60
 
-      # stop/start/reboot/power-cycle all skip:true for this run — on this
-      # platform, powering off a bare-metal instance was confirmed to
-      # actually DELETE it (2026-07-30, Ofir), not stop/preserve it like a
-      # VM. This run is based on an existing instance we don't want to
-      # touch destructively, so nothing that changes its power state runs.
+      # stop/start/reboot/power-cycle: real, enabled. Confirmed reliable on a
+      # disposable instance (2026-08-03/04) once launch_instance.py/
+      # start_instance.py/reboot_instance.py/power_cycle_instance.py's SSH-wait
+      # retry + private_ip-not-public_ip fixes landed — the older "powering
+      # off deletes the instance" note (2026-07-30) predates those fixes and
+      # no longer applies. Still: only ever point this config at a disposable
+      # instance (never the NVIDIA-recorded "golden" one) via
+      # ZCOMPUTE_BM_INSTANCE_ID/KEY_FILE — these steps are real and destructive
+      # if something goes wrong.
       - name: stop_instance
         phase: test
-        skip: true
         command: "python3 ../scripts/bare_metal/stop_instance.py"
         args:
           - "--instance-id"
@@ -139,7 +146,6 @@ commands:
 
       - name: start_instance
         phase: test
-        skip: true
         command: "python3 ../scripts/bare_metal/start_instance.py"
         args:
           - "--instance-id"
@@ -150,11 +156,12 @@ commands:
           - "{{steps.launch_instance.key_file}}"
           - "--pre-start-delay"
           - "600"
-        timeout: 13500
+        # Matches bare_metal_lifecycle_only.yaml - accounts for
+        # start_instance.py's SSH-wait retry (2026-08-03).
+        timeout: 16200
 
       - name: reboot_instance
         phase: test
-        skip: true
         command: "python3 ../scripts/bare_metal/reboot_instance.py"
         args:
           - "--instance-id"
@@ -167,11 +174,12 @@ commands:
           - "{{steps.launch_instance.private_ip}}"
           - "--wait-before-check"
           - "180"
-        timeout: 3600
+        # Matches bare_metal_lifecycle_only.yaml - accounts for
+        # reboot_instance.py's SSH-wait retry (2026-08-03).
+        timeout: 5400
 
       - name: power_cycle_instance
         phase: test
-        skip: true
         command: "python3 ../scripts/bare_metal/power_cycle_instance.py"
         args:
           - "--instance-id"
@@ -182,7 +190,10 @@ commands:
           - "{{steps.launch_instance.key_file}}"
           - "--pre-start-delay"
           - "600"
-        timeout: 16200
+        # Matches bare_metal_lifecycle_only.yaml - accounts for
+        # power_cycle_instance.py's SSH-wait retry + non-blocking public_ip
+        # check (2026-08-03).
+        timeout: 19200
 
       - name: describe_instance
         phase: test
@@ -196,8 +207,9 @@ commands:
           - "{{steps.launch_instance.key_file}}"
         timeout: 120
 
-      # Left skipped even in debug mode — root-volume-swap is destructive
-      # and wasn't what was asked for here (ssh + stress, not reinstall).
+      # skip:true - AWS's own reference config skips this too (confirmed
+      # 2026-08-04) - root-volume-swap is destructive and not something
+      # either platform's reference exercises.
       - name: reinstall_instance
         phase: test
         skip: true
@@ -275,7 +287,7 @@ commands:
 
 tests:
   cluster_name: "zcompute-bm-validation-full-suite"
-  description: "zcompute Bare Metal (BMaaS) full suite — persistent instance, full GPU checks, no teardown"
+  description: "zcompute Bare Metal (BMaaS) full suite — persistent instance, full GPU checks + lifecycle (stop/start/reboot/power_cycle), no teardown"
 
   # Unlock everything — this is a real full-cost run against real GB200
   # hardware, not the mechanics-only pass bare_metal.yaml defaults to.
