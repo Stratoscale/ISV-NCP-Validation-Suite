@@ -199,16 +199,28 @@ def main() -> int:
     try:
         if existing_id and existing_key:
             result = _reuse_instance(ec2, existing_id, existing_key)
-            public_ip = result.get("public_ip")
-            if public_ip:
-                ssh_ip = result.get("private_ip")
+            # Gate on private_ip, not public_ip - the EIP is only required to
+            # get NICo to attach a network interface during initial launch;
+            # a reused (already-running) instance already has one, and the
+            # EIP itself is unreachable from this run station anyway
+            # (confirmed 2026-08-03). Gating this on public_ip meant every
+            # reuse of an instance without an EIP silently skipped SSH-wait
+            # AND GPU dependency install entirely.
+            ssh_ip = result.get("private_ip")
+            if ssh_ip:
                 ssh_ready = wait_for_ssh(
                     ssh_ip, args.ssh_user, existing_key, max_attempts=80, interval=15
                 )
                 result["ssh_ready"] = ssh_ready
+                result["gpu_deps"] = {}
                 if ssh_ready and not args.skip_gpu_setup:
                     nvidia_ok = load_nvidia_modules(ssh_ip, args.ssh_user, existing_key)
                     result["nvidia_modules_loaded"] = nvidia_ok
+                    try:
+                        print("[launch] installing GPU dependencies (Docker, NCT, CUDA) ...", file=sys.stderr)
+                        result["gpu_deps"] = setup_gpu_dependencies(ssh_ip, args.ssh_user, existing_key)
+                    except Exception as e:
+                        print(f"[launch] WARNING: setup_gpu_dependencies failed (non-fatal): {e}", file=sys.stderr)
             print(json.dumps(result, indent=2))
             return 0 if result.get("success") else 1
 
