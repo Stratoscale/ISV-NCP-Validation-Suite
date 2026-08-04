@@ -1,0 +1,283 @@
+# zcompute Bare Metal — POST-REBOOT lifecycle config (power-cycle + reinstall only)
+#
+# Same as bare_metal_lifecycle_only.yaml, but stop_instance/start_instance/
+# reboot_instance are skip:true - those three are already confirmed working
+# (2026-08-03), so re-running them on every iteration just wastes time. This
+# config picks up from power_cycle_instance onward: power_cycle_instance ->
+# describe_instance -> reinstall_instance.
+#
+# Unlike bare_metal_lifecycle_only.yaml, this ONE IS meant to be run against
+# an existing instance via ZCOMPUTE_BM_INSTANCE_ID/KEY_FILE - the whole point
+# is skipping the already-verified stop/start/reboot steps, not re-launching
+# fresh. Same destructive-operation caution still applies: only point this
+# at a disposable instance you're fine losing (power_cycle and especially
+# reinstall are still real, potentially-destructive operations).
+#
+# No --lab-id on this run — exploratory only, not for upload.
+#
+# Usage:
+#   export ZCOMPUTE_BASE_URL=https://<gb200-cluster-ip>
+#   export AWS_ACCESS_KEY_ID=...
+#   export AWS_SECRET_ACCESS_KEY=...
+#   export AWS_REGION=symphony
+#   export ZCOMPUTE_BM_AMI_ID=ami-3ce3727bebb54502b931a59e47e40877
+#   export ZCOMPUTE_BM_INSTANCE_ID=i-xxx     # an existing, disposable instance
+#   export ZCOMPUTE_BM_KEY_FILE=/tmp/isv-bm-test-key.pem
+#   PYTHONPATH=isvctl/src:isvtest/src:isvreporter/src \
+#     uv run isvctl test run -f isvctl/configs/providers/zcompute/config/bare_metal_post_reboot.yaml -v -s
+
+import:
+  - ./bare_metal.yaml
+
+version: "1.0"
+
+commands:
+  bare_metal:
+    phases: ["setup", "test", "teardown"]
+    steps:
+      - name: launch_instance
+        phase: setup
+        command: "python3 ../scripts/bare_metal/launch_instance.py"
+        args:
+          - "--name"
+          - "isv-bm-test-gpu-lifecycle-4"
+          - "--instance-type"
+          - "{{instance_type}}"
+          - "--region"
+          - "{{region}}"
+          - "--ami-id"
+          - "{{ami_id}}"
+          - "--vpc-id"
+          - "{{vpc_id}}"
+          - "--subnet-id"
+          - "{{subnet_id}}"
+        timeout: 5400
+
+      - name: list_instances
+        phase: test
+        command: "python3 ../scripts/vm/list_instances.py"
+        args:
+          - "--vpc-id"
+          - "{{steps.launch_instance.vpc_id}}"
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 120
+
+      - name: verify_tags
+        phase: test
+        command: "python3 ../scripts/bare_metal/describe_tags.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 60
+
+      - name: topology_placement
+        phase: test
+        command: "python3 ../scripts/bare_metal/topology_placement.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 120
+        continue_on_failure: true
+
+      - name: serial_console
+        phase: test
+        command: "python3 ../scripts/bare_metal/serial_console.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 60
+        continue_on_failure: true
+
+      # Skipped here - already confirmed working (2026-08-03), no need to
+      # redo them on every reinstall/power-cycle iteration.
+      - name: stop_instance
+        phase: test
+        skip: true
+        command: "python3 ../scripts/bare_metal/stop_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+        timeout: 2100
+
+      - name: start_instance
+        phase: test
+        skip: true
+        command: "python3 ../scripts/bare_metal/start_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--pre-start-delay"
+          - "600"
+        timeout: 16200
+
+      - name: reboot_instance
+        phase: test
+        skip: true
+        command: "python3 ../scripts/bare_metal/reboot_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--private-ip"
+          - "{{steps.launch_instance.private_ip}}"
+          - "--wait-before-check"
+          - "180"
+        timeout: 5400
+
+      # This config's actual starting point.
+      - name: power_cycle_instance
+        phase: test
+        command: "python3 ../scripts/bare_metal/power_cycle_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+          - "--pre-start-delay"
+          - "600"
+        timeout: 19200
+
+      - name: describe_instance
+        phase: test
+        command: "python3 ../scripts/bare_metal/describe_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+        timeout: 120
+
+      - name: reinstall_instance
+        phase: test
+        command: "python3 ../scripts/bare_metal/reinstall_instance.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+        timeout: 8100
+
+      - name: deploy_nim
+        phase: test
+        skip: true
+        command: "python3 ../../shared/deploy_nim.py"
+        args:
+          - "--host"
+          - "{{steps.launch_instance.private_ip}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+        timeout: 7200
+
+      # Teardown left skip:true - if reinstall fails/behaves unexpectedly,
+      # we want the instance left as-is to inspect, not auto-cleaned.
+      - name: teardown_nim
+        phase: teardown
+        skip: true
+        command: "python3 ../../shared/teardown_nim.py"
+        args:
+          - "--host"
+          - "{{steps.launch_instance.private_ip}}"
+          - "--key-file"
+          - "{{steps.launch_instance.key_file}}"
+        timeout: 120
+
+      - name: teardown
+        phase: teardown
+        skip: true
+        command: "python3 ../scripts/bare_metal/teardown.py"
+        timeout: 3300
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--eip-allocation-id"
+          - "{{steps.launch_instance.eip_allocation_id}}"
+          - "--delete-key-pair"
+          - "--delete-security-group"
+          - "{{teardown_flag}}"
+
+      - name: verify_teardown
+        phase: teardown
+        skip: true
+        command: "python3 ../scripts/bare_metal/verify_terminated.py"
+        args:
+          - "--instance-id"
+          - "{{steps.launch_instance.instance_id}}"
+          - "--region"
+          - "{{region}}"
+          - "--security-group-id"
+          - "{{steps.launch_instance.security_group_id}}"
+          - "--key-name"
+          - "{{steps.launch_instance.key_name}}"
+        timeout: 120
+
+tests:
+  cluster_name: "zcompute-bm-validation-post-reboot"
+  description: "zcompute Bare Metal (BMaaS) POST-REBOOT run — power-cycle + reinstall only, no upload"
+
+  exclude:
+    markers: []
+    tests:
+      # Same permanent platform gaps as the other zcompute configs.
+      - CloudInitCheck
+      - SerialConsoleCheck
+      - SerialConsoleRetentionCheck
+      - TopologyPlacementCheck
+      # Heavy/slow checks not relevant to a lifecycle-only pass.
+      - GpuStressCheck
+      - NcclCheck
+      - TrainingCheck
+      - HostSoftwareCheck
+      - PciBusCheck
+      - VcpuPinningCheck
+      - InfiniBandCheck
+      - CpuInfoCheck
+      - ContainerRuntimeCheck
+      - EthernetCheck
+      - DriverCheck
+      - NvlinkCheck
+      - NimHealthCheck
+      - NimModelCheck
+      - NimInferenceCheck
+
+  validations:
+    gpu:
+      step: describe_instance
+      checks:
+        GpuCheck:
+          host: "{{steps.describe_instance.private_ip}}"
+          key_file: "{{steps.describe_instance.key_file}}"
+          expected_gpus: 4
+
+    power_cycle_gpu:
+      step: power_cycle_instance
+      checks:
+        GpuCheck:
+          host: "{{steps.power_cycle_instance.private_ip}}"
+          key_file: "{{steps.power_cycle_instance.key_file}}"
+          expected_gpus: 4
