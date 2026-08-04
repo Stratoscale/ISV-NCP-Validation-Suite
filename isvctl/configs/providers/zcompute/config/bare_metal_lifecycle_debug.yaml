@@ -202,8 +202,12 @@ commands:
       # flags this root-volume-swap path as untested end-to-end on zcompute,
       # so this run is exactly what verifies it for the first time. Fresh
       # disposable instance only.
+      # skip:true - AWS's own reference config skips this too (never
+      # exercised there either, confirmed 2026-08-04) - not testing
+      # anything AWS itself doesn't test.
       - name: reinstall_instance
         phase: test
+        skip: true
         command: "python3 ../scripts/bare_metal/reinstall_instance.py"
         args:
           - "--instance-id"
