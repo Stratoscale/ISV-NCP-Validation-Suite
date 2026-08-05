@@ -53,10 +53,18 @@ class K8sNcclWorkload(BaseWorkloadCheck):
         if configured_gpu_count is not None:
             gpu_count = configured_gpu_count
         else:
-            # Auto-detect from first node
-            gpu_count = get_node_gpu_count(nodes[0])
+            # Auto-detect: nodes[0] may be a GPU-labeled node with no real
+            # schedulable capacity (e.g. a tainted control-plane node where
+            # the NVIDIA device-plugin never got scheduled) - try each node
+            # until one reports a real, positive GPU count instead of
+            # trusting the first one blindly.
+            gpu_count = 0
+            for node in nodes:
+                gpu_count = get_node_gpu_count(node)
+                if gpu_count > 0:
+                    break
             if gpu_count == 0:
-                self.set_failed(f"Could not determine GPU count for node {nodes[0]}")
+                self.set_failed(f"Could not determine GPU count on any node: {', '.join(nodes)}")
                 return
 
         # NCCL tests need at least 2 GPUs for meaningful results
