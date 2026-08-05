@@ -566,6 +566,102 @@ Once fixed, remove `NCCL_IB_HCA=^rocep75s0` from the MPIJob manifest (`isvtest/s
 
 ---
 
+## 11a. RDMA Shared Device Plugin (optional — `rdma/ib` extended resource)
+
+Recommended by Anton Khizunov (CoreWeave) as the standard way to expose IB/RoCE
+HCAs on Kubernetes — pods request `rdma/ib: 1` as an extended resource instead
+of running privileged with a raw `/dev/infiniband` hostPath mount. "shared"
+means the same HCAs are handed to many pods (`rdmaHcaMax`), which is what you
+want for IB (unlike SR-IOV VFs, which are exclusive). Not required for the
+current MNNVL/IMEX experiment (which disables the NCCL net plugin entirely,
+so no RDMA path is exercised) but needed if/when NCCL_NET_PLUGIN reverts to
+using the IB fabric alongside MNNVL.
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rdma-devices
+  namespace: kube-system
+data:
+  config.json: |
+    {
+      "periodicUpdateInterval": 300,
+      "configList": [
+        {
+          "resourceName": "ib",
+          "resourcePrefix": "rdma",
+          "rdmaHcaMax": 63,
+          "selectors": {
+            "ifNames": [],
+            "vendors": ["15b3"],
+            "deviceIDs": [],
+            "drivers": ["mlx5_core"],
+            "linkTypes": ["infiniband"]
+          }
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: rdma-shared-dp-ds
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      name: rdma-shared-dp-ds
+  template:
+    metadata:
+      labels:
+        name: rdma-shared-dp-ds
+    spec:
+      hostNetwork: true
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      priorityClassName: system-node-critical
+      containers:
+        - image: ghcr.io/mellanox/k8s-rdma-shared-dev-plugin:v1.5.3
+          name: k8s-rdma-shared-dp
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+            - name: config
+              mountPath: /k8s-rdma-shared-dev-plugin
+            - name: devs
+              mountPath: /dev/
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+        - name: config
+          configMap:
+            name: rdma-devices
+            items:
+              - key: config.json
+                path: config.json
+        - name: devs
+          hostPath:
+            path: /dev/
+EOF
+
+# Verify — one pod per node, and the extended resource shows up on GPU workers
+kubectl get pods -n kube-system -l name=rdma-shared-dp-ds
+kubectl get nodes -l nvidia.com/gpu.present=true -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.allocatable."rdma/ib"}{"\n"}{end}'
+```
+
+---
+
 ## 11. Pre-Pull Large Images
 
 NVIDIA workload images are 7–20 GB. Pull them once on all GPU nodes to avoid timeout failures during the test run. Three images are required:

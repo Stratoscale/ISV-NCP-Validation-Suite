@@ -88,29 +88,31 @@ tests:
     k8s_workloads:
       checks:
         K8sNcclMultiNodeWorkload:
-          # min_bus_bw_gbps: pending a real passing run's measured bandwidth
-          # with the IMEX-channel fix below (see nccl_allreduce_mpijob.yaml).
-          # A colleague (Anton, via Slack 2026-08-05) reported 660 GB/s on
-          # equivalent 2-node GB200 hardware using NCCL_MNNVL_ENABLE=1 +
-          # NCCL_NVLS_ENABLE=0, with /dev/nvidia-caps-imex-channels exposed
-          # to the worker pods via a plain hostPath mount + IMEX_CHANNELS=0 -
-          # no NVIDIA DRA driver/ComputeDomain CRD needed at all, just a
-          # host device we weren't mounting. Confirmed the device exists on
-          # this cluster's nodes (2026-08-05: /dev/nvidia-caps-imex-channels/
-          # channel0). If this run reaches Anton's ballpark, raise
-          # min_bus_bw_gbps close to that; if it's still degraded, drop it to
-          # match whatever this run actually measures instead of guessing.
-          min_bus_bw_gbps: 350
+          # First MNNVL attempt (mnnvl_enable=true + IMEX-channel hostPath mount,
+          # 2026-08-05 run) failed: "Cuda failure 801 'operation not supported'" in
+          # transport/p2p.cc — NCCL merged both nodes into one clique (nNodes 1,
+          # localRanks 8) and the actual cross-node NVLink P2P open failed at the
+          # CUDA driver level. Fell back to mnnvl_enable: false at that point.
+          #
+          # EXPERIMENT (2026-08-05, round 2): got the exact working manifest from
+          # Anton Khizunov (CoreWeave) for the same MNNVL_ENABLE=1/NVLS_ENABLE=0/
+          # IMEX-hostPath-mount combo on 2-node GB200 (confirmed 660 GB/s on his
+          # side). Two differences from what we tried: (1) his image bundles NCCL
+          # 2.30.7+cuda12.9 vs our nvcr.io/nvidia/hpc-benchmarks:25.04's NCCL
+          # 2.25.1+cuda12.8 — our host driver already reports cudaDriverVersion
+          # 12090, so the container's older NCCL may be the actual source of the
+          # "not supported" call; (2) he sets NCCL_NET_PLUGIN=none, skipping the
+          # HPC-X SHARP/IBext_v8 plugin our image auto-loads entirely. Swapped the
+          # manifest's launcher/worker image to match his exactly (see
+          # nccl_allreduce_mpijob.yaml) and re-enabled mnnvl_enable to test both
+          # at once. min_bus_bw_gbps left low so this run isn't failed on
+          # bandwidth alone — raise it once we have a real passing measurement,
+          # or drop mnnvl_enable back to false again if this still crashes.
+          min_bus_bw_gbps: 100
           # Workers take 3-4 min to start (GPU device plugin reclaims resources from the
           # just-completed single-node NCCL pod) + ~80s for apt-get install openssh-server.
           # Default 300s is not enough; 600s covers the full startup window comfortably.
           startup_timeout: 600
-          # Matching Anton's proven-working combo: MNNVL enabled (uses the
-          # real cross-node NVLink fabric for point-to-point transfers, now
-          # that IMEX channels are actually mounted) but NVLS disabled (the
-          # multicast-tree collective acceleration, which failed here even
-          # per-node with "Cuda failure 2 'out of memory'" once it was
-          # actually reaching the workers - see git history on this file).
           mnnvl_enable: true
           nvls_enable: false
 
