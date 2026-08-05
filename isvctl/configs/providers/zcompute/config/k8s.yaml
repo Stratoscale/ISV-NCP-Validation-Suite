@@ -127,11 +127,20 @@ tests:
           # Default 300s is too tight — raise to 600s.
           timeout: 600
 
+        K8sNimHelmWorkload-1b:
+          # Same PVC gap as K8sNimInferenceWorkload below (confirmed 2026-08-05:
+          # model-store PVC stuck Pending, "ProvisioningFailed: no topology key
+          # found on CSINode <node>" on ebs-sc/ebs.csi.aws.com) - use an ephemeral
+          # emptyDir instead so the pod actually schedules.
+          use_pvc_cache: false
+
         K8sNimHelmWorkload-3b:
           # Override suite default (gpu_per_node=8) — NIM 3b with 8× H100 on zCompute
           # tries tensor parallelism which fails (engine profile not found or NVLink/IMEX
           # initialization issue). Single-GPU deployment works correctly on H100 SXM5 80GB.
           gpu_count: 1
+          # Same PVC gap as K8sNimHelmWorkload-1b above.
+          use_pvc_cache: false
 
         K8sNimInferenceWorkload:
           # aws-cloud-controller-manager is crashing and ebs-csi-node is in

@@ -117,12 +117,16 @@ class K8sNimHelmWorkload(BaseWorkloadCheck):
         Config options:
             reuse_deployment: Service name of existing NIM deployment to reuse (skips deploy/cleanup)
             skip_cleanup: If True, don't delete the NIM deployment after test (for dev iteration)
+            use_pvc_cache: If False, use an ephemeral emptyDir for /model-store instead of a PVC
+                (default: True). Same rationale as K8sNimInferenceWorkload's use_pvc_cache -
+                clusters without a working CSI provisioner leave the PVC stuck Pending forever.
         """
         namespace = get_k8s_namespace()
         timeout = self.config.get("timeout", 1800)
         model = self.config.get("model", self.DEFAULT_MODEL)
         model_tag = self.config.get("model_tag", self.DEFAULT_MODEL_TAG)
         gpu_count = self.config.get("gpu_count", 1)
+        use_pvc_cache = bool(self.config.get("use_pvc_cache", True))
 
         # GenAI-Perf settings
         perf_requests = self.config.get("genai_perf_requests", 100)
@@ -205,7 +209,7 @@ class K8sNimHelmWorkload(BaseWorkloadCheck):
                 return
 
             # Step 2: Deploy NIM via Helm
-            if not self._deploy_nim_helm(release_name, namespace, model, model_tag, gpu_count):
+            if not self._deploy_nim_helm(release_name, namespace, model, model_tag, gpu_count, use_pvc_cache):
                 return
 
             # Step 3: Wait for NIM to be ready
@@ -392,7 +396,15 @@ class K8sNimHelmWorkload(BaseWorkloadCheck):
             self.set_failed(f"Failed to download Helm chart: {e}")
             return False
 
-    def _deploy_nim_helm(self, release_name: str, namespace: str, model: str, model_tag: str, gpu_count: int) -> bool:
+    def _deploy_nim_helm(
+        self,
+        release_name: str,
+        namespace: str,
+        model: str,
+        model_tag: str,
+        gpu_count: int,
+        use_pvc_cache: bool = True,
+    ) -> bool:
         """Deploy NIM using downloaded Helm chart.
 
         Reference: https://docs.nvidia.com/nim/large-language-models/latest/deploy-helm.html
@@ -423,8 +435,13 @@ class K8sNimHelmWorkload(BaseWorkloadCheck):
             "model.ngcAPISecret=ngc-api",  # Secret name from _check_prerequisites
             "--set",
             "imagePullSecrets[0].name=ngc-secret",  # Image pull secret
+            # persistence.enabled=false falls back to the chart's emptyDir for /model-store.
+            # On clusters without a working CSI provisioner (same gap documented for
+            # K8sNimInferenceWorkload's use_pvc_cache) the PVC sits Pending forever with
+            # "ProvisioningFailed: no topology key found on CSINode <node>" and the pod
+            # never schedules - confirmed 2026-08-05 on this cluster's ebs-sc/ebs.csi.aws.com.
             "--set",
-            "persistence.enabled=true",
+            f"persistence.enabled={'true' if use_pvc_cache else 'false'}",
             # Target GPU nodes using node selector (use --set-string to avoid bool conversion)
             "--set-string",
             "nodeSelector.nvidia\\.com/gpu\\.present=true",
