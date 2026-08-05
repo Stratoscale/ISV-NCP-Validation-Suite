@@ -46,33 +46,58 @@ else
 fi
 
 # --- GPU info ---
+# gpu.present=true is applied by hardware discovery regardless of taints, so it can
+# include nodes (e.g. a tainted control-plane node) where the NVIDIA device-plugin
+# DaemonSet never actually gets scheduled and no capacity.nvidia.com/gpu is
+# published. Sampling .items[0] blindly picked up exactly that case (confirmed
+# 2026-08-05 on a GB200 control-plane node) and its empty capacity fell through to
+# an nvidia-smi fallback that queries the LOCAL host running this script, not the
+# k8s node - producing a completely unrelated GPU count. Instead, gather capacity
+# from every gpu.present=true node and only use the ones that actually report it.
 GPU_NODE_COUNT=$($KUBECTL get nodes -l nvidia.com/gpu.present=true -o name 2>/dev/null | wc -l || echo "0")
-GPU_PER_NODE=$($KUBECTL get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].status.capacity.nvidia\.com/gpu}' 2>/dev/null || echo "0")
-if [ -z "$GPU_PER_NODE" ] || [ "$GPU_PER_NODE" = "null" ]; then
-    if [ "$USE_NVIDIA_SMI_FALLBACK" = "true" ] && command -v nvidia-smi &> /dev/null; then
-        GPU_PER_NODE=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo "0")
-    else
-        GPU_PER_NODE=0
-    fi
+GPU_CAPACITIES=$($KUBECTL get nodes -l nvidia.com/gpu.present=true \
+    -o jsonpath='{range .items[*]}{.status.capacity.nvidia\.com/gpu}{"\n"}{end}' 2>/dev/null \
+    | grep -E '^[0-9]+$' || echo "")
+
+if [ -n "$GPU_CAPACITIES" ]; then
+    GPU_PER_NODE=$(echo "$GPU_CAPACITIES" | head -1)
+    TOTAL_GPUS=$(echo "$GPU_CAPACITIES" | awk '{sum += $1} END {print sum + 0}')
+elif [ "$USE_NVIDIA_SMI_FALLBACK" = "true" ] && command -v nvidia-smi &> /dev/null; then
+    GPU_PER_NODE=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo "0")
+    TOTAL_GPUS=$((GPU_NODE_COUNT * GPU_PER_NODE))
+else
+    GPU_PER_NODE=0
+    TOTAL_GPUS=0
 fi
 
-TOTAL_GPUS=$((GPU_NODE_COUNT * GPU_PER_NODE))
-
 # --- Driver version from node labels ---
-DRIVER_MAJOR=$($KUBECTL get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.labels.nvidia\.com/cuda\.driver\.major}' 2>/dev/null || echo "")
-DRIVER_MINOR=$($KUBECTL get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.labels.nvidia\.com/cuda\.driver\.minor}' 2>/dev/null || echo "")
-DRIVER_REV=$($KUBECTL get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[0].metadata.labels.nvidia\.com/cuda\.driver\.rev}' 2>/dev/null || echo "")
+# Same root cause/fix as GPU capacity above - iterate every gpu.present=true node
+# and use the first one that actually publishes driver-version labels, instead of
+# assuming .items[0] has them.
+DRIVER_VERSION=""
+for _node in $($KUBECTL get nodes -l nvidia.com/gpu.present=true -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+    _driver_major=$($KUBECTL get node "$_node" -o jsonpath='{.metadata.labels.nvidia\.com/cuda\.driver\.major}' 2>/dev/null || echo "")
+    _driver_minor=$($KUBECTL get node "$_node" -o jsonpath='{.metadata.labels.nvidia\.com/cuda\.driver\.minor}' 2>/dev/null || echo "")
+    _driver_rev=$($KUBECTL get node "$_node" -o jsonpath='{.metadata.labels.nvidia\.com/cuda\.driver\.rev}' 2>/dev/null || echo "")
 
-if [ -n "$DRIVER_MAJOR" ] && [ -n "$DRIVER_MINOR" ] && [ -n "$DRIVER_REV" ]; then
-    DRIVER_VERSION="${DRIVER_MAJOR}.${DRIVER_MINOR}.${DRIVER_REV}"
-elif [ -n "$DRIVER_MAJOR" ] && [ -n "$DRIVER_MINOR" ]; then
-    DRIVER_VERSION="${DRIVER_MAJOR}.${DRIVER_MINOR}"
-elif [ -n "$DRIVER_MAJOR" ]; then
-    DRIVER_VERSION="${DRIVER_MAJOR}"
-elif [ "$USE_NVIDIA_SMI_FALLBACK" = "true" ] && command -v nvidia-smi &> /dev/null; then
-    DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || echo "unknown")
-else
-    DRIVER_VERSION="unknown"
+    if [ -n "$_driver_major" ] && [ -n "$_driver_minor" ] && [ -n "$_driver_rev" ]; then
+        DRIVER_VERSION="${_driver_major}.${_driver_minor}.${_driver_rev}"
+        break
+    elif [ -n "$_driver_major" ] && [ -n "$_driver_minor" ]; then
+        DRIVER_VERSION="${_driver_major}.${_driver_minor}"
+        break
+    elif [ -n "$_driver_major" ]; then
+        DRIVER_VERSION="${_driver_major}"
+        break
+    fi
+done
+
+if [ -z "$DRIVER_VERSION" ]; then
+    if [ "$USE_NVIDIA_SMI_FALLBACK" = "true" ] && command -v nvidia-smi &> /dev/null; then
+        DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || echo "unknown")
+    else
+        DRIVER_VERSION="unknown"
+    fi
 fi
 
 # --- GPU operator namespace ---
