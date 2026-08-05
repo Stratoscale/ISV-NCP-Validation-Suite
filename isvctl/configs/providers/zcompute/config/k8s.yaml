@@ -108,10 +108,13 @@ tests:
           # under /etc/nvidia-imex/), not anything in this repo - re-running
           # this suite from scratch on a freshly provisioned node will need
           # the same fix repeated unless it's folded into cluster setup.
-          # min_bus_bw_gbps left at the RoCE-only threshold pending a real
-          # measured MNNVL passing run - raise it once we have one (Anton's
-          # reference point on equivalent hardware: 660 GB/s).
-          min_bus_bw_gbps: 100
+          # First real MNNVL passing run measured 674.60 GB/s peak / 184.62 GB/s
+          # avg (2026-08-05, MPIJob nccl-allreduce-mn-229abecb) - beats Anton's
+          # 660 GB/s reference point on equivalent hardware. Raised
+          # min_bus_bw_gbps to 500 (comfortable margin below the measured
+          # peak, matching this repo's existing margin convention - e.g. 454
+          # measured -> 350 threshold for the old NVLS/RoCE combo).
+          min_bus_bw_gbps: 500
           # Workers take 3-4 min to start (GPU device plugin reclaims resources from the
           # just-completed single-node NCCL pod) + ~80s for apt-get install openssh-server.
           # Default 300s is not enough; 600s covers the full startup window comfortably.
