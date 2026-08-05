@@ -44,6 +44,7 @@ spec:
                     -x OMPI_MCA_coll_fca_enable \
                     -x NCCL_NCHANNELS_PER_NET_PEER \
                     -x NCCL_NVLS_ENABLE -x NCCL_MNNVL_ENABLE \
+                    -x NVIDIA_IMEX_CHANNELS -x NCCL_NET_GDR_C2C -x NCCL_CUMEM_ENABLE \
                     /usr/local/bin/all_reduce_perf_mpi -b 8 -e 4G -f 2 -g 1
               env:
                 - name: NCCL_IB_DISABLE
@@ -57,6 +58,12 @@ spec:
                   value: "1"           # Enable NVLink Switch (NVLS) tree for intra-node collectives
                 - name: NCCL_MNNVL_ENABLE
                   value: "1"           # Enable Multi-Node NVLink fabric detection/use
+                - name: NVIDIA_IMEX_CHANNELS
+                  value: "0"           # Use IMEX channel 0 (/dev/nvidia-caps-imex-channels/channel0) for MNNVL
+                - name: NCCL_NET_GDR_C2C
+                  value: "1"           # GPUDirect RDMA over Grace-Blackwell C2C interconnect
+                - name: NCCL_CUMEM_ENABLE
+                  value: "1"           # CUDA memory management required for NVLS/MNNVL multicast allocation
                 - name: NCCL_NCHANNELS_PER_NET_PEER
                   value: "2"           # 2 net channels per inter-node GPU pair
           tolerations:
@@ -134,6 +141,9 @@ spec:
                   value: "2"           # 2 net channels per inter-node GPU pair → engages 2 NICs per pair (4 total across 2 pairs)
               securityContext:
                 privileged: true       # required to open /dev/infiniband/uverbs* (cgroup device whitelist)
+                capabilities:
+                  add:
+                    - IPC_LOCK         # required for IMEX/MNNVL shared memory registration
               resources:
                 limits:
                   nvidia.com/gpu: 4 # overridden at runtime by K8sNcclMultiNodeWorkload
@@ -142,6 +152,8 @@ spec:
                   mountPath: /dev/shm
                 - name: infiniband
                   mountPath: /dev/infiniband
+                - name: imex-channels
+                  mountPath: /dev/nvidia-caps-imex-channels
           hostNetwork: true            # puts proxy threads in host netns so ibv_modify_qp can resolve RoCE neighbor entries
           nodeSelector:
             nvidia.com/gpu.present: "true"
@@ -154,6 +166,9 @@ spec:
             - name: infiniband
               hostPath:
                 path: /dev/infiniband  # exposes host RoCE/IB verbs devices without a device plugin
+            - name: imex-channels
+              hostPath:
+                path: /dev/nvidia-caps-imex-channels  # IMEX channels for MNNVL - confirmed present on host, 2026-08-05
             - name: shm
               emptyDir:
                 medium: Memory

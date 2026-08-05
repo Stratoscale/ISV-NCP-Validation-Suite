@@ -88,42 +88,30 @@ tests:
     k8s_workloads:
       checks:
         K8sNcclMultiNodeWorkload:
-          # min_bus_bw_gbps kept at the original value pending a real passing
-          # run's measured bandwidth on this cluster's actual 4-GPU/node
-          # topology with MNNVL disabled (see mnnvl_enable below) - the ~454
-          # GB/s this was originally calibrated against assumed 8 GPUs/node
-          # with a working cross-node NVLink fabric, neither of which holds
-          # here. Revisit once we have a real number instead of guessing.
+          # min_bus_bw_gbps: pending a real passing run's measured bandwidth
+          # with the IMEX-channel fix below (see nccl_allreduce_mpijob.yaml).
+          # A colleague (Anton, via Slack 2026-08-05) reported 660 GB/s on
+          # equivalent 2-node GB200 hardware using NCCL_MNNVL_ENABLE=1 +
+          # NCCL_NVLS_ENABLE=0, with /dev/nvidia-caps-imex-channels exposed
+          # to the worker pods via a plain hostPath mount + IMEX_CHANNELS=0 -
+          # no NVIDIA DRA driver/ComputeDomain CRD needed at all, just a
+          # host device we weren't mounting. Confirmed the device exists on
+          # this cluster's nodes (2026-08-05: /dev/nvidia-caps-imex-channels/
+          # channel0). If this run reaches Anton's ballpark, raise
+          # min_bus_bw_gbps close to that; if it's still degraded, drop it to
+          # match whatever this run actually measures instead of guessing.
           min_bus_bw_gbps: 350
           # Workers take 3-4 min to start (GPU device plugin reclaims resources from the
           # just-completed single-node NCCL pod) + ~80s for apt-get install openssh-server.
           # Default 300s is not enough; 600s covers the full startup window comfortably.
           startup_timeout: 600
-          # NCCL auto-detects a real, physical Multi-Node NVLink (MNNVL) fabric
-          # connecting both nodes' GPUs into one logical NVLink clique
-          # (confirmed live 2026-08-05: "MNNVL 1 cliqueId 2 cliqueSize 8",
-          # "nNodes 1" for an 8-GPU/2-node job) and tries to use NVLS
-          # multicast across it - but the IMEX/ComputeDomain channels that
-          # would actually make that work aren't provisioned here (no NVIDIA
-          # DRA driver installed, confirmed via use_compute_domain: auto
-          # correctly reporting "disabled"). Result: "Cuda failure 801
-          # 'operation not supported'" during NVLS transport init.
-          # Disabling MNNVL detection forces NCCL to treat the nodes as
-          # genuinely separate and communicate over standard RoCE/InfiniBand,
-          # which the single-node NCCL check already proved works
-          # (170+ GB/s).
-          mnnvl_enable: false
-          # With mnnvl_enable disabled, NCCL_NVLS_ENABLE was also discovered
-          # to have never actually reached the worker processes at all
-          # (missing from mpirun's `-x` export list - fixed 2026-08-05,
-          # 3322b82) - so per-node NVLS (real, single-node NVSwitch
-          # multicast, no cross-node fabric involved) is now being genuinely
-          # attempted here for the first time, and it also fails, with a
-          # *different* error: "Cuda failure 2 'out of memory'" in
-          # transport/nvls.cc. Whatever NVLS multicast memory allocation
-          # this platform needs isn't available/sized correctly here either.
-          # Disabling NVLS entirely as well so the test runs over standard
-          # ring/tree algorithms instead.
+          # Matching Anton's proven-working combo: MNNVL enabled (uses the
+          # real cross-node NVLink fabric for point-to-point transfers, now
+          # that IMEX channels are actually mounted) but NVLS disabled (the
+          # multicast-tree collective acceleration, which failed here even
+          # per-node with "Cuda failure 2 'out of memory'" once it was
+          # actually reaching the workers - see git history on this file).
+          mnnvl_enable: true
           nvls_enable: false
 
         K8sGpuStressWorkload:
