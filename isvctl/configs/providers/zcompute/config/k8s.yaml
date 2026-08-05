@@ -107,16 +107,24 @@ tests:
           # would actually make that work aren't provisioned here (no NVIDIA
           # DRA driver installed, confirmed via use_compute_domain: auto
           # correctly reporting "disabled"). Result: "Cuda failure 801
-          # 'operation not supported'" during NVLS transport init on
-          # whichever node's ranks happen to touch it first. Disabling MNNVL
-          # detection forces NCCL to treat the nodes as genuinely separate
-          # and fall back to standard RoCE/InfiniBand inter-node
-          # communication, which the single-node NCCL check already proved
-          # works fine (170+ GB/s). nvls_enable is left enabled (true) since
-          # it's irrelevant once MNNVL merging itself is disabled - real
-          # per-node NVLS (each node's own NVSwitch, no cross-node fabric)
-          # was never actually the problem.
+          # 'operation not supported'" during NVLS transport init.
+          # Disabling MNNVL detection forces NCCL to treat the nodes as
+          # genuinely separate and communicate over standard RoCE/InfiniBand,
+          # which the single-node NCCL check already proved works
+          # (170+ GB/s).
           mnnvl_enable: false
+          # With mnnvl_enable disabled, NCCL_NVLS_ENABLE was also discovered
+          # to have never actually reached the worker processes at all
+          # (missing from mpirun's `-x` export list - fixed 2026-08-05,
+          # 3322b82) - so per-node NVLS (real, single-node NVSwitch
+          # multicast, no cross-node fabric involved) is now being genuinely
+          # attempted here for the first time, and it also fails, with a
+          # *different* error: "Cuda failure 2 'out of memory'" in
+          # transport/nvls.cc. Whatever NVLS multicast memory allocation
+          # this platform needs isn't available/sized correctly here either.
+          # Disabling NVLS entirely as well so the test runs over standard
+          # ring/tree algorithms instead.
+          nvls_enable: false
 
         K8sGpuStressWorkload:
           # gpu-worker-1 runs after NCCL; GPU device plugin needs extra time to reclaim.
