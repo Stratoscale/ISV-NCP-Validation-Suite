@@ -90,24 +90,33 @@ tests:
         K8sNcclMultiNodeWorkload:
           # min_bus_bw_gbps kept at the original value pending a real passing
           # run's measured bandwidth on this cluster's actual 4-GPU/node
-          # topology with NVLS disabled (see nvls_enable below) - the ~454
+          # topology with MNNVL disabled (see mnnvl_enable below) - the ~454
           # GB/s this was originally calibrated against assumed 8 GPUs/node
-          # with NVLS enabled, neither of which holds here. Revisit once we
-          # have a real number instead of guessing.
+          # with a working cross-node NVLink fabric, neither of which holds
+          # here. Revisit once we have a real number instead of guessing.
           min_bus_bw_gbps: 350
           # Workers take 3-4 min to start (GPU device plugin reclaims resources from the
           # just-completed single-node NCCL pod) + ~80s for apt-get install openssh-server.
           # Default 300s is not enough; 600s covers the full startup window comfortably.
           startup_timeout: 600
-          # NVLS (NVLink SHARP multicast) fails with "Cuda failure 801
-          # 'operation not supported'" specifically on worker-node-0's GPUs
-          # during ncclCommInitRank, despite NCCL's own discovery reporting
-          # NVLS multicast as available on both nodes (confirmed live,
-          # 2026-08-05, full launcher log captured). worker-node-1 showed no
-          # such failure. Likely a real driver/fabric-manager asymmetry
-          # between the two nodes, not something this suite can fix -
-          # disabling NVLS as a workaround so the test can actually run.
-          nvls_enable: false
+          # NCCL auto-detects a real, physical Multi-Node NVLink (MNNVL) fabric
+          # connecting both nodes' GPUs into one logical NVLink clique
+          # (confirmed live 2026-08-05: "MNNVL 1 cliqueId 2 cliqueSize 8",
+          # "nNodes 1" for an 8-GPU/2-node job) and tries to use NVLS
+          # multicast across it - but the IMEX/ComputeDomain channels that
+          # would actually make that work aren't provisioned here (no NVIDIA
+          # DRA driver installed, confirmed via use_compute_domain: auto
+          # correctly reporting "disabled"). Result: "Cuda failure 801
+          # 'operation not supported'" during NVLS transport init on
+          # whichever node's ranks happen to touch it first. Disabling MNNVL
+          # detection forces NCCL to treat the nodes as genuinely separate
+          # and fall back to standard RoCE/InfiniBand inter-node
+          # communication, which the single-node NCCL check already proved
+          # works fine (170+ GB/s). nvls_enable is left enabled (true) since
+          # it's irrelevant once MNNVL merging itself is disabled - real
+          # per-node NVLS (each node's own NVSwitch, no cross-node fabric)
+          # was never actually the problem.
+          mnnvl_enable: false
 
         K8sGpuStressWorkload:
           # gpu-worker-1 runs after NCCL; GPU device plugin needs extra time to reclaim.

@@ -116,6 +116,15 @@ class K8sNcclMultiNodeWorkload(BaseWorkloadCheck):
         # multicast support is available" during discovery (a real driver/
         # fabric-manager gap, not something this suite can detect up front).
         nvls_enable = bool(self.config.get("nvls_enable", True))
+        # MNNVL (Multi-Node NVLink fabric detection) - disable when NCCL
+        # auto-detects a physical cross-node NVLink clique (real rack-scale
+        # hardware) but the IMEX/ComputeDomain channels needed to actually
+        # use it aren't provisioned, causing the same "Cuda failure 801
+        # 'operation not supported'" during NVLS transport init regardless
+        # of nvls_enable (MNNVL merges nodes into one NVLink clique before
+        # NVLS is even considered). Forces NCCL to treat nodes as separate
+        # and communicate over the standard RoCE/InfiniBand fabric instead.
+        mnnvl_enable = bool(self.config.get("mnnvl_enable", True))
 
         if not self._check_mpi_operator():
             pytest.skip(
@@ -148,6 +157,7 @@ class K8sNcclMultiNodeWorkload(BaseWorkloadCheck):
         self.log.info(f"Image: {image}, Min BW: {min_bus_bw} GB/s, Timeout: {job_timeout}s")
         self.log.info(f"ComputeDomain (MNNVL/IMEX): {'enabled' if use_cd else 'disabled'}")
         self.log.info(f"NVLS (NVLink SHARP multicast): {'enabled' if nvls_enable else 'disabled'}")
+        self.log.info(f"MNNVL (multi-node NVLink fabric detection): {'enabled' if mnnvl_enable else 'disabled'}")
 
         manifest_path = Path(__file__).parent / "manifests" / "k8s" / "nccl_allreduce_mpijob.yaml"
         if not manifest_path.exists():
@@ -156,7 +166,7 @@ class K8sNcclMultiNodeWorkload(BaseWorkloadCheck):
 
         yaml_content = manifest_path.read_text()
         yaml_content = self._patch_manifest(
-            yaml_content, job_name, node_count, gpus_per_node, total_gpus, image, quick_mode, nvls_enable
+            yaml_content, job_name, node_count, gpus_per_node, total_gpus, image, quick_mode, nvls_enable, mnnvl_enable
         )
 
         if use_cd:
@@ -249,6 +259,7 @@ class K8sNcclMultiNodeWorkload(BaseWorkloadCheck):
         image: str,
         quick_mode: bool = False,
         nvls_enable: bool = True,
+        mnnvl_enable: bool = True,
     ) -> str:
         """Replace placeholder values in the MPIJob manifest."""
         yaml_content = yaml_content.replace("name: nccl-allreduce-multinode", f"name: {job_name}", 1)
@@ -260,6 +271,11 @@ class K8sNcclMultiNodeWorkload(BaseWorkloadCheck):
             yaml_content = yaml_content.replace("nvcr.io/nvidia/hpc-benchmarks:25.04", image)
         if quick_mode:
             yaml_content = yaml_content.replace("-b 8 -e 4G -f 2", "-b 1M -e 256M -f 2")
+        if not mnnvl_enable:
+            yaml_content = yaml_content.replace(
+                '- name: NCCL_MNNVL_ENABLE\n                  value: "1"',
+                '- name: NCCL_MNNVL_ENABLE\n                  value: "0"',
+            )
         if not nvls_enable:
             yaml_content = yaml_content.replace(
                 '- name: NCCL_NVLS_ENABLE\n                  value: "1"',
