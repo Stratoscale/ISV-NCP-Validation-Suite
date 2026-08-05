@@ -106,6 +106,17 @@ tests:
           # initialization issue). Single-GPU deployment works correctly on H100 SXM5 80GB.
           gpu_count: 1
 
+        K8sNimInferenceWorkload:
+          # aws-cloud-controller-manager is crashing and ebs-csi-node is in
+          # CrashLoopBackOff on this EKS-D cluster (same gap as the excluded
+          # CSI/PVC checks below) - the nim-model-cache PVC never binds
+          # (confirmed 2026-08-05: stuck Pending on ebs-sc). The PVC only
+          # caches downloaded model weights across pod restarts, which
+          # doesn't matter for a single validation run - use an ephemeral
+          # emptyDir instead so the check actually exercises real NIM
+          # inference on this cluster.
+          use_pvc_cache: false
+
     kubernetes:
       checks:
         K8sNodeCountCheck:

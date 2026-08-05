@@ -48,6 +48,13 @@ class K8sNimInferenceWorkload(BaseWorkloadCheck):
         namespace = get_k8s_namespace()
         # Default timeout: 25 minutes (model download + load + inference)
         timeout = self.config.get("timeout", 1500)
+        # Default True to preserve existing behavior on providers where PVC
+        # dynamic provisioning actually works (e.g. AWS/EKS gp3). Set False
+        # on clusters without a functioning CSI/cloud-controller-manager -
+        # the PVC only exists to cache model weights across pod restarts,
+        # which an ephemeral emptyDir serves just as well for a single
+        # validation run.
+        use_pvc_cache = bool(self.config.get("use_pvc_cache", True))
 
         # Verify NGC secrets exist (using shared utility)
         success, error = ensure_ngc_secrets(namespace)
@@ -61,9 +68,10 @@ class K8sNimInferenceWorkload(BaseWorkloadCheck):
             self.set_passed("Skipped: No GPU nodes found in cluster")
             return
 
-        # Ensure PVC for model cache exists and is usable
-        if not self._ensure_pvc(namespace):
-            return
+        if use_pvc_cache:
+            # Ensure PVC for model cache exists and is usable
+            if not self._ensure_pvc(namespace):
+                return
 
         # Generate unique job name
         job_name = f"nim-llama-3b-test-{uuid.uuid4().hex[:8]}"
@@ -78,6 +86,12 @@ class K8sNimInferenceWorkload(BaseWorkloadCheck):
 
         # Replace job name
         yaml_content = yaml_content.replace("name: nim-llama-3b-inference-test", f"name: {job_name}")
+
+        if not use_pvc_cache:
+            yaml_content = yaml_content.replace(
+                "        - name: nim-cache\n          persistentVolumeClaim:\n            claimName: nim-model-cache\n",
+                "        - name: nim-cache\n          emptyDir: {}\n",
+            )
 
         self.log.info(f"Starting NIM inference workload (timeout: {timeout}s)")
         self.log.info("Steps: 1. Pull images, 2. Download model, 3. Load model (10-12m), 4. Run inference")
