@@ -662,6 +662,63 @@ kubectl get nodes -l nvidia.com/gpu.present=true -o jsonpath='{range .items[*]}{
 
 ---
 
+## 11b. NVIDIA IMEX Daemon (required for MNNVL / `K8sNcclMultiNodeWorkload` with `mnnvl_enable: true`)
+
+`NCCL_MNNVL_ENABLE=1` merges GPU nodes into one NVLink clique and moves
+cross-node collectives onto real NVLink P2P via the `/dev/nvidia-caps-imex-channels`
+device. Just mounting that device into the pod (see `nccl_allreduce_mpijob.yaml`)
+is **not** sufficient — the `nvidia-imex` systemd service on the **host**
+(not the pod) has to actually be running and configured with every node in
+the fabric, or every cross-node P2P open fails with `Cuda failure 801
+'operation not supported'` in `transport/p2p.cc` while intra-node P2P works
+fine (2026-08-05 investigation on this cluster — confirmed independent of
+NCCL version and net plugin choice).
+
+**On every GPU node in the fabric domain:**
+
+```bash
+# 1. Check current state
+systemctl status nvidia-imex --no-pager
+# If "inactive (dead)" with a status=0/SUCCESS exit and no error in
+# `systemctl status`, check the daemon's own log for the real reason:
+sudo tail -20 /var/log/nvidia-imex.log
+
+# 2. nodes_config.cfg must list every node's fabric-facing IP, one per line,
+#    in the SAME order on every node (0 bytes / missing = daemon starts,
+#    finds no peers, exits clean — looks like nothing is wrong until you
+#    check the log above). Use IPs, not hostnames, if hostname resolution
+#    isn't reliable between nodes.
+printf '<node-1-ip>\n<node-2-ip>\n' | sudo tee /etc/nvidia-imex/nodes_config.cfg
+
+# 3. Start it
+sudo systemctl start nvidia-imex
+sleep 5
+systemctl status nvidia-imex --no-pager   # must show "active (running)", not re-exiting
+
+# 4. If it still exits clean, check the log for "was discovered on multiple
+#    network interfaces" — some nodes have their fabric IP bound to more than
+#    one interface (e.g. the real NIC plus a WireGuard tunnel). Pin the
+#    correct interface explicitly:
+grep -n -i 'NETWORK_INTERFACE' /etc/nvidia-imex/config.cfg
+sudo sed -i 's/^NETWORK_INTERFACE=.*/NETWORK_INTERFACE=<correct-iface>/' /etc/nvidia-imex/config.cfg
+sudo systemctl restart nvidia-imex
+
+# 5. Confirm the domain is healthy
+sudo nvidia-imex-ctl -q
+# Expected: READY (not "failed to connect ... Connection refused")
+```
+
+> **Note:** a stale `99-no-crashloop.conf` systemd drop-in (`Restart=no`) may
+> already exist from an earlier attempt to silence the restart loop this
+> causes — that drop-in treats the symptom, not the cause. Once
+> `nodes_config.cfg` is populated and the interface is unambiguous, the
+> service stays up on its own.
+
+Once `nvidia-imex-ctl -q` reports `READY` on every GPU node, `mnnvl_enable: true`
+in `k8s.yaml` should work — no repo-side change needed beyond that flag.
+
+---
+
 ## 11. Pre-Pull Large Images
 
 NVIDIA workload images are 7–20 GB. Pull them once on all GPU nodes to avoid timeout failures during the test run. Three images are required:

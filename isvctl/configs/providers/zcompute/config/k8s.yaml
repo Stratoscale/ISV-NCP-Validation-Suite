@@ -88,40 +88,35 @@ tests:
     k8s_workloads:
       checks:
         K8sNcclMultiNodeWorkload:
-          # MNNVL (mnnvl_enable=true) fails on this cluster regardless of NCCL
-          # version or net plugin - tried twice (2026-08-05):
-          #   1. nvcr.io/nvidia/hpc-benchmarks:25.04 (NCCL 2.25.1+cuda12.8): crashed
-          #      with "Cuda failure 801 'operation not supported'" in transport/p2p.cc
-          #      once NCCL merged both nodes into one clique (nNodes 1, localRanks 8).
-          #   2. Anton Khizunov's (CoreWeave) exact working recipe for the same
-          #      MNNVL_ENABLE=1/NVLS_ENABLE=0/IMEX-hostPath-mount combo (confirmed
-          #      660 GB/s on his 2-node GB200): swapped to his image
-          #      (ghcr.io/coreweave/nccl-tests, NCCL 2.30.7+cuda12.9) and added
-          #      NCCL_NET_PLUGIN=none to skip the HPC-X SHARP/IBext_v8 plugin our
-          #      image auto-loads. Both differences confirmed applied (log showed
-          #      "NCCL version 2.30.7+cuda12.9" and NCCL's own built-in IB plugin,
-          #      not HPC-X's) - still crashed identically, this time specifically
-          #      at ncclP2pImportShareableBuffer (transport/p2p.cc:296), and
-          #      specifically on the cross-node rank pairs (0<->7, 3<->4) while
-          #      every intra-node P2P/MNNVL channel connected fine. This rules out
-          #      NCCL version and net plugin as the cause - it's a genuine
-          #      cross-node NVLink/IMEX gap at the CUDA driver level. Having
-          #      /dev/nvidia-caps-imex-channels mounted (confirmed present) isn't
-          #      enough; the nvidia-imex daemon that actually services that channel
-          #      is most likely not running/configured on worker-node-0/worker-node-1
-          #      (no mention of it anywhere in this repo or CLUSTER-SETUP.md) -
-          #      needs host-level investigation (systemctl status nvidia-imex +
-          #      /etc/nvidia-imex/nodes_config.cfg on both nodes), tracked
-          #      separately from getting this suite green.
-          # mnnvl_enable: false falls back to the proven RoCE fabric path.
-          # min_bus_bw_gbps matches the last threshold validated against that
-          # topology: 31 GB/s avg / 105-116 GB/s peak (COMPATIBILITY_REPORT.md).
+          # MNNVL root cause found and fixed at the host level (2026-08-05).
+          # Two earlier attempts crashed identically with "Cuda failure 801
+          # 'operation not supported'" in transport/p2p.cc regardless of NCCL
+          # version (2.25.1 vs 2.30.7) or net plugin (HPC-X SHARP vs NCCL's own
+          # built-in IB) - always on the cross-node rank pairs specifically,
+          # never the intra-node ones. Root cause: the nvidia-imex systemd
+          # service on worker-node-0/worker-node-1 was present but dead -
+          # /etc/nvidia-imex/nodes_config.cfg was 0 bytes (empty), so the
+          # daemon started, found no fabric peers configured, and exited
+          # clean every time (a prior "99-no-crashloop.conf" drop-in had
+          # disabled its auto-restart rather than fixing the empty config).
+          # Populated nodes_config.cfg with both nodes' IPs (7.243.41.31,
+          # 7.243.41.33) on both hosts; worker-node-1 additionally needed
+          # NETWORK_INTERFACE=enP6p3s0np0 pinned in config.cfg because that IP
+          # was ambiguously bound to two interfaces (the real NIC and a wg0
+          # WireGuard tunnel). `sudo nvidia-imex-ctl -q` now reports READY on
+          # both nodes. This is a host/OS-level fix (systemd + config files
+          # under /etc/nvidia-imex/), not anything in this repo - re-running
+          # this suite from scratch on a freshly provisioned node will need
+          # the same fix repeated unless it's folded into cluster setup.
+          # min_bus_bw_gbps left at the RoCE-only threshold pending a real
+          # measured MNNVL passing run - raise it once we have one (Anton's
+          # reference point on equivalent hardware: 660 GB/s).
           min_bus_bw_gbps: 100
           # Workers take 3-4 min to start (GPU device plugin reclaims resources from the
           # just-completed single-node NCCL pod) + ~80s for apt-get install openssh-server.
           # Default 300s is not enough; 600s covers the full startup window comfortably.
           startup_timeout: 600
-          mnnvl_enable: false
+          mnnvl_enable: true
           nvls_enable: false
 
         K8sGpuStressWorkload:
