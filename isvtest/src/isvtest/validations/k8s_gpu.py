@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import ClassVar
 
 from isvtest.config.settings import get_k8s_namespace
-from isvtest.core.k8s import get_kubectl_base_shell
+from isvtest.core.k8s import get_kubectl_base_shell, get_node_gpu_count
 from isvtest.core.nvidia import count_gpus_from_full_output, parse_driver_version
 from isvtest.core.validation import BaseValidation
 
@@ -242,6 +242,19 @@ class K8sGpuPodAccessCheck(K8sNvidiaSmiCheck):
     Note: This check runs nvidia-smi in a pod that requests 1 GPU, so it can only
     verify that 1 GPU is accessible per node (due to Kubernetes resource isolation).
     Use K8sGpuCapacityCheck for actual node-level GPU count validation.
+
+    The "isolated to 1 GPU" assumption only holds on nodes where the NVIDIA
+    device-plugin actually manages nvidia.com/gpu as a schedulable resource. A
+    node carrying only the nvidia.com/gpu.present=true hardware-discovery label
+    (e.g. a tainted control-plane node the device-plugin DaemonSet never gets
+    scheduled to) has no such isolation: a pod force-scheduled there via
+    nodeName bypasses resource accounting entirely and sees every physical GPU
+    regardless of what it requested. Confirmed 2026-08-05: a 1-GPU-request pod
+    on this cluster's control-plane node saw all 4 of its physical GPUs, while
+    the two real GPU workers correctly saw exactly 1 each. Nodes without real
+    capacity are still probed by K8sNvidiaSmiCheck/K8sDriverVersionCheck (which
+    only assert "does nvidia-smi run"/"driver version", not isolation), but are
+    excluded here.
     """
 
     description = "Verify GPU access from pods by running nvidia-smi (sees 1 allocated GPU per node)."
@@ -264,6 +277,7 @@ class K8sGpuPodAccessCheck(K8sNvidiaSmiCheck):
         # Inherit timeout from config if present, else default to 60
         timeout = int(self.config.get("timeout", 60))
         results = self._run_ephemeral_pods(timeout=timeout)
+        results = {node: res for node, res in results.items() if get_node_gpu_count(node) > 0}
         mismatches = []
         total_gpus_found = 0
 

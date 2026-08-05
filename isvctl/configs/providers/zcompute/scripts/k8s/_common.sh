@@ -54,20 +54,27 @@ fi
 # an nvidia-smi fallback that queries the LOCAL host running this script, not the
 # k8s node - producing a completely unrelated GPU count. Instead, gather capacity
 # from every gpu.present=true node and only use the ones that actually report it.
-GPU_NODE_COUNT=$($KUBECTL get nodes -l nvidia.com/gpu.present=true -o name 2>/dev/null | wc -l || echo "0")
 GPU_CAPACITIES=$($KUBECTL get nodes -l nvidia.com/gpu.present=true \
     -o jsonpath='{range .items[*]}{.status.capacity.nvidia\.com/gpu}{"\n"}{end}' 2>/dev/null \
     | grep -E '^[0-9]+$' || echo "")
 
 if [ -n "$GPU_CAPACITIES" ]; then
+    # gpu_node_count means "nodes where a GPU request is actually resource-
+    # managed/isolated" (consumed by K8sGpuPodAccessCheck.total_gpu_count and
+    # K8sNcclMultiNodeWorkload.nodes) - use the real-capacity count, not the
+    # broader gpu.present=true label count, for the same reason as above.
+    GPU_NODE_COUNT=$(echo "$GPU_CAPACITIES" | wc -l)
     GPU_PER_NODE=$(echo "$GPU_CAPACITIES" | head -1)
     TOTAL_GPUS=$(echo "$GPU_CAPACITIES" | awk '{sum += $1} END {print sum + 0}')
-elif [ "$USE_NVIDIA_SMI_FALLBACK" = "true" ] && command -v nvidia-smi &> /dev/null; then
-    GPU_PER_NODE=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo "0")
-    TOTAL_GPUS=$((GPU_NODE_COUNT * GPU_PER_NODE))
 else
-    GPU_PER_NODE=0
-    TOTAL_GPUS=0
+    GPU_NODE_COUNT=$($KUBECTL get nodes -l nvidia.com/gpu.present=true -o name 2>/dev/null | wc -l || echo "0")
+    if [ "$USE_NVIDIA_SMI_FALLBACK" = "true" ] && command -v nvidia-smi &> /dev/null; then
+        GPU_PER_NODE=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l || echo "0")
+        TOTAL_GPUS=$((GPU_NODE_COUNT * GPU_PER_NODE))
+    else
+        GPU_PER_NODE=0
+        TOTAL_GPUS=0
+    fi
 fi
 
 # --- Driver version from node labels ---
