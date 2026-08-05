@@ -134,10 +134,6 @@ tests:
       # CNCF conformance is a long-running suite (hours) — run separately
       - K8sCncfConformanceCheck
 
-      # cluster-autoscaler in zadara-system is CrashLoopBackOff (not needed for NCP validation)
-      # Remove this exclusion once cluster-autoscaler is fixed or removed
-      - K8sNoErrorPodsCheck
-
       # aws-cloud-controller-manager is crashing and ebs-csi-node is in
       # CrashLoopBackOff on this EKS-D cluster - expected, since these
       # bare-metal nodes aren't connected to cloud block storage, so the
