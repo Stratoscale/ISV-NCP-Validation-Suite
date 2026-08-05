@@ -368,8 +368,15 @@ class K8sNcclMultiNodeWorkload(BaseWorkloadCheck):
 
         completed, phase = self._wait_for_mpijob_completion(launcher_pod, job_name, namespace, timeout)
 
-        # Collect logs before cleanup - pods still exist with cleanPodPolicy: Running
-        logs = get_pod_logs(launcher_pod, namespace, container="launcher", timeout=60)
+        # Collect logs before cleanup - pods still exist with cleanPodPolicy: Running.
+        # If the container has restarted (crash-looping), the CURRENT instance is a
+        # fresh, still-early retry - its logs stop wherever that retry has gotten to
+        # so far, not the actual error. --previous holds the last terminated
+        # attempt's full output, which is what actually failed.
+        restart_count = self._get_launcher_restart_count(launcher_pod, namespace)
+        logs = get_pod_logs(
+            launcher_pod, namespace, container="launcher", timeout=60, previous=restart_count > 0
+        )
 
         if not completed:
             self._dump_debug_info(job_name, namespace)
@@ -385,6 +392,23 @@ class K8sNcclMultiNodeWorkload(BaseWorkloadCheck):
             return
 
         self._check_and_report(logs, min_bus_bw, node_count, total_gpus, job_name)
+
+    def _get_launcher_restart_count(self, launcher_pod: str, namespace: str) -> int:
+        """Return the launcher container's restart count (0 if unavailable)."""
+        result = run_kubectl(
+            [
+                "get",
+                "pod",
+                launcher_pod,
+                "-n",
+                namespace,
+                "-o",
+                "jsonpath={.status.containerStatuses[0].restartCount}",
+            ]
+        )
+        if result.returncode == 0 and result.stdout.strip().isdigit():
+            return int(result.stdout.strip())
+        return 0
 
     def _wait_for_launcher_pod(self, job_name: str, namespace: str, timeout: int = 120) -> str | None:
         """Wait for the MPIJob launcher pod to appear and return its name.

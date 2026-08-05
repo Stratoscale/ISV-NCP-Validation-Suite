@@ -455,7 +455,9 @@ def wait_for_pod_completion(
     return False, last_phase
 
 
-def get_pod_logs(pod_name: str, namespace: str, container: str | None = None, timeout: int = 30) -> str:
+def get_pod_logs(
+    pod_name: str, namespace: str, container: str | None = None, timeout: int = 30, previous: bool = False
+) -> str:
     """Get logs from a pod.
 
     Args:
@@ -463,6 +465,12 @@ def get_pod_logs(pod_name: str, namespace: str, container: str | None = None, ti
         namespace: Kubernetes namespace.
         container: Optional container name (for multi-container pods).
         timeout: Timeout for fetching logs.
+        previous: Fetch logs from the last terminated instance of the
+            container instead of the current one. Use this for a crash-
+            looping container - the current instance may only just be
+            starting up (or a fresh in-progress attempt), while the
+            previous, already-terminated one has the full output of what
+            actually failed.
 
     Returns:
         Pod logs as string, or empty string if error.
@@ -471,6 +479,8 @@ def get_pod_logs(pod_name: str, namespace: str, container: str | None = None, ti
     log_cmd = ["logs", pod_name, "-n", namespace]
     if container:
         log_cmd.extend(["-c", container])
+    if previous:
+        log_cmd.append("--previous")
 
     # Try with insecure flag first (needed for microk8s with cert issues)
     result = run_kubectl(log_cmd + ["--insecure-skip-tls-verify-backend=true"], timeout=timeout)
