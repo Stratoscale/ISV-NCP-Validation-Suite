@@ -212,10 +212,21 @@ class K8sNcclMultiNodeWorkload(BaseWorkloadCheck):
         if gpus_config is not None:
             gpus_per_node = int(gpus_config)
         else:
-            detected = get_node_gpu_count(gpu_nodes[0])
-            if detected > 0:
-                gpus_per_node = detected
-                self.log.info(f"Auto-detected {gpus_per_node} GPUs per node from {gpu_nodes[0]}")
+            # gpu_nodes[0] may be a GPU-labeled node with no real schedulable
+            # capacity (e.g. a tainted control-plane node where the NVIDIA
+            # device-plugin never got scheduled) - try each node until one
+            # reports a real, positive GPU count instead of trusting the
+            # first one blindly (same fix as K8sNcclWorkload).
+            gpus_per_node = 0
+            detected_node = None
+            for node in gpu_nodes:
+                detected = get_node_gpu_count(node)
+                if detected > 0:
+                    gpus_per_node = detected
+                    detected_node = node
+                    break
+            if gpus_per_node > 0:
+                self.log.info(f"Auto-detected {gpus_per_node} GPUs per node from {detected_node}")
             else:
                 gpus_per_node = get_nccl_multinode_gpus_per_node()
                 self.log.warning(f"Could not detect GPUs per node, using default: {gpus_per_node}")
