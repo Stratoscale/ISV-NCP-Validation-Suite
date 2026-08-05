@@ -110,10 +110,13 @@ tests:
       checks:
         K8sNodeCountCheck:
           count: "{{ steps.setup.kubernetes.node_count | default(4, true) }}"
-        K8sGpuCapacityCheck:
-          resource_name: "nvidia.com/gpu"
-          expected_per_node: 8
-          expected_total: 16
+        # expected_per_node/expected_total intentionally left unset here -
+        # inherits the base suite's auto-detected steps.setup.kubernetes.
+        # gpu_per_node/total_gpus (now correctly computed by _common.sh,
+        # 2026-08-05: 4 per node / 8 total on this cluster's real GPU
+        # workers, excluding the tainted GPU-less control-plane node).
+        # A hardcoded 8/16 here previously shadowed that auto-detection
+        # entirely and never matched the real hardware.
         K8sMigConfigCheck:
           require_mig: false
           expected_labels:
