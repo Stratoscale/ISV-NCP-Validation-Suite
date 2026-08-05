@@ -25,16 +25,7 @@ spec:
         spec:
           containers:
             - name: launcher
-              # EXPERIMENT (2026-08-05): swapped from nvcr.io/nvidia/hpc-benchmarks:25.04
-              # (NCCL 2.25.1+cuda12.8) to match the exact NCCL/CUDA version Anton
-              # Khizunov (CoreWeave) confirmed working for MNNVL on 2-node GB200
-              # (660 GB/s) - our version crashed with "Cuda failure 801 'operation
-              # not supported'" in transport/p2p.cc when NCCL merged both nodes
-              # into one MNNVL clique. Revert to hpc-benchmarks (the certification
-              # reference image) once we confirm whether the version bump alone
-              # fixes it - this image is not the one certification results should
-              # ultimately come from.
-              image: ghcr.io/coreweave/nccl-tests:12.9.2-devel-ubuntu24.04-nccl2.30.7-1-00fed36
+              image: nvcr.io/nvidia/hpc-benchmarks:25.04
               command:
                 - /bin/bash
                 - -c
@@ -54,8 +45,7 @@ spec:
                     -x NCCL_NCHANNELS_PER_NET_PEER \
                     -x NCCL_NVLS_ENABLE -x NCCL_MNNVL_ENABLE \
                     -x NVIDIA_IMEX_CHANNELS -x NCCL_NET_GDR_C2C -x NCCL_CUMEM_ENABLE \
-                    -x NCCL_NET_PLUGIN \
-                    /opt/nccl_tests/build/all_reduce_perf -b 8 -e 4G -f 2 -g 1
+                    /usr/local/bin/all_reduce_perf_mpi -b 8 -e 4G -f 2 -g 1
               env:
                 - name: NCCL_IB_DISABLE
                   value: "0"
@@ -76,9 +66,6 @@ spec:
                   value: "1"           # CUDA memory management required for NVLS/MNNVL multicast allocation
                 - name: NCCL_NCHANNELS_PER_NET_PEER
                   value: "2"           # 2 net channels per inter-node GPU pair
-                - name: NCCL_NET_PLUGIN
-                  value: "none"        # Matches Anton's working recipe — don't load the HPC-X SHARP/IBext_v8
-                                       # net plugin at all; let NCCL's built-in transports handle MNNVL/P2P
           tolerations:
             - key: "node-role.kubernetes.io/control-plane"
               operator: "Exists"
@@ -96,8 +83,7 @@ spec:
         spec:
           containers:
             - name: worker
-              # EXPERIMENT (2026-08-05): see matching note on the launcher container above.
-              image: ghcr.io/coreweave/nccl-tests:12.9.2-devel-ubuntu24.04-nccl2.30.7-1-00fed36
+              image: nvcr.io/nvidia/hpc-benchmarks:25.04
               command:
                 - /bin/bash
                 - -c
