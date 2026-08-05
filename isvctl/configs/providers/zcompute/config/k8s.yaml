@@ -135,6 +135,19 @@ tests:
       # Remove this exclusion once cluster-autoscaler is fixed or removed
       - K8sNoErrorPodsCheck
 
+      # aws-cloud-controller-manager is crashing and ebs-csi-node is in
+      # CrashLoopBackOff on this EKS-D cluster - expected, since these
+      # bare-metal nodes aren't connected to cloud block storage, so the
+      # cloud controllers can't function here. These three checks all depend
+      # on CSI/PVC provisioning. Confirmed acceptable to exclude with
+      # Oren Kisler and Eyal Cohen (Slack, 2026-08-05) - equivalent results
+      # were already uploaded from the HGX lab (which has the storage
+      # subsystem); this gap will be raised with NVIDIA directly rather than
+      # worked around here.
+      - K8sCsiStorageTypesCheck
+      - K8sCsiStorageQuotaApiCheck
+      - K8sCsiProvisioningModesCheck
+
       # NIM workloads enabled — requires NGC_API_KEY to be set in environment
 
       # K8sGpuStressWorkload is NOT excluded but requires the pytorch image to be
