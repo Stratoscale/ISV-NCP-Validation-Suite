@@ -428,6 +428,18 @@ class K8sNimHelmWorkload(BaseWorkloadCheck):
             # Target GPU nodes using node selector (use --set-string to avoid bool conversion)
             "--set-string",
             "nodeSelector.nvidia\\.com/gpu\\.present=true",
+            # GPU nodes on this cluster carry a nvidia.com/gpu:NoSchedule taint (see
+            # nccl_allreduce_mpijob.yaml, nccl_allreduce_job.yaml, k8s_stress.py,
+            # nim_llama_3b_inference_job.yaml) - the chart's default values don't
+            # tolerate it, so without this the pod matches the nodeSelector but stays
+            # Pending forever (confirmed 2026-08-05: K8sNimHelmWorkload-1b/-3b both
+            # timed out at 900s/1800s with an empty waiting.reason the whole time).
+            "--set-string",
+            "tolerations[0].key=nvidia.com/gpu",
+            "--set-string",
+            "tolerations[0].operator=Exists",
+            "--set-string",
+            "tolerations[0].effect=NoSchedule",
             # Note: Don't use --wait here, _wait_for_nim_ready() handles waiting with progress logging
         ]
 
@@ -802,9 +814,18 @@ spec:
 
         kubectl_base = get_kubectl_base_shell()
 
-        self.run_command(f"helm status {release_name} -n {namespace}")
-        self.run_command(f"{kubectl_base} describe pods -n {namespace} -l app.kubernetes.io/instance={release_name}")
-        self.run_command(f"{kubectl_base} logs -n {namespace} -l app.kubernetes.io/instance={release_name} --tail=100")
+        result = self.run_command(f"helm status {release_name} -n {namespace}")
+        self.log.error(f"Helm status:\n{result.stdout}\n{result.stderr}")
+
+        result = self.run_command(
+            f"{kubectl_base} describe pods -n {namespace} -l app.kubernetes.io/instance={release_name}"
+        )
+        self.log.error(f"Pod details:\n{result.stdout}\n{result.stderr}")
+
+        result = self.run_command(
+            f"{kubectl_base} logs -n {namespace} -l app.kubernetes.io/instance={release_name} --tail=100"
+        )
+        self.log.error(f"Pod logs:\n{result.stdout}\n{result.stderr}")
 
     def _cleanup_helm(self, release_name: str, namespace: str) -> None:
         """Clean up Helm release and downloaded chart file."""
