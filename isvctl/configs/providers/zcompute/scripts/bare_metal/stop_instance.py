@@ -26,7 +26,7 @@ from botocore.exceptions import ClientError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from common.client import get_client  # noqa: E402
-from common.ec2 import poll_instance_state  # noqa: E402
+from common.ec2 import log, poll_instance_state  # noqa: E402
 
 
 def main() -> int:
@@ -49,10 +49,7 @@ def main() -> int:
         inst = resp["Reservations"][0]["Instances"][0]
         current_state = inst["State"]["Name"]
         result["previous_state"] = current_state
-        print(
-            f"[stop] instance {args.instance_id} current state: {current_state}",
-            file=sys.stderr,
-        )
+        log(f"[stop] instance {args.instance_id} current state: {current_state}")
 
         if current_state == "stopped":
             result["state"] = "stopped"
@@ -69,7 +66,7 @@ def main() -> int:
             print(json.dumps(result, indent=2))
             return 1
 
-        print(f"[stop] stopping instance {args.instance_id} ...", file=sys.stderr)
+        log(f"[stop] stopping instance {args.instance_id} ...")
         ec2.stop_instances(InstanceIds=[args.instance_id])
         result["stop_initiated"] = True
 

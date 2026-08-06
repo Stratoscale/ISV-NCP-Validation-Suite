@@ -13,6 +13,7 @@ zcompute-specific notes:
 
 from __future__ import annotations
 
+import datetime
 import os
 import shutil
 import subprocess
@@ -21,6 +22,18 @@ import time
 from typing import Any
 
 from botocore.exceptions import ClientError
+
+
+def log(msg: str) -> None:
+    """Print a stderr diagnostic line prefixed with a wall-clock timestamp.
+
+    Bare-metal lifecycle operations (stop/start/reboot/power-cycle) can run
+    for hours; without a per-line timestamp, correlating a given [poll]/
+    [start]/[stop] line to when it actually happened means cross-referencing
+    the outer isvctl orchestrator's own log (Aviv/Amit, 2026-08-06).
+    """
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {msg}", file=sys.stderr)
 
 # If set, load_nvidia_modules/setup_gpu_dependencies use password auth via
 # sshpass instead of key_file - same override as ssh_utils.py's
@@ -90,7 +103,7 @@ def poll_instance_state(
     while time.monotonic() < deadline:
         resp = ec2.describe_instances(InstanceIds=[instance_id])
         state = resp["Reservations"][0]["Instances"][0]["State"]["Name"]
-        print(f"[poll] instance {instance_id} state: {state}", file=sys.stderr)
+        log(f"[poll] instance {instance_id} state: {state}")
         if state in target_states:
             return state
         time.sleep(interval)
@@ -128,10 +141,7 @@ def wait_for_public_ip(
         ip = inst.get("PublicIpAddress")
         if ip and ip not in ("", "None"):
             return ip
-        print(
-            f"[poll] waiting for public IP on {instance_id} ...",
-            file=sys.stderr,
-        )
+        log(f"[poll] waiting for public IP on {instance_id} ...")
         time.sleep(interval)
     return None
 
@@ -338,7 +348,7 @@ def load_nvidia_modules(host: str, user: str, key_file: str) -> bool:
             capture_output=True, text=True, timeout=timeout,
         )
 
-    print(f"[ec2] loading NVIDIA modules on {host} ...", file=sys.stderr)
+    log(f"[ec2] loading NVIDIA modules on {host} ...")
     # modprobe loads the kernel modules; nvidia-modprobe -u creates the
     # /dev/nvidia-uvm device node that CUDA (and NIM) require.
     # Without the device node, nvidia-smi works but any CUDA app inside
@@ -352,7 +362,7 @@ def load_nvidia_modules(host: str, user: str, key_file: str) -> bool:
     if not loaded and "not found" in result.stderr.lower():
         # Module not built for the current kernel (kernel upgraded since AMI was built).
         # Search for a pre-built linux-modules-nvidia-*-server-<kernel> package and install it.
-        print("[ec2] module not found — searching for pre-built NVIDIA kernel modules ...", file=sys.stderr)
+        log("[ec2] module not found — searching for pre-built NVIDIA kernel modules ...")
         install_cmd = (
             "KERNEL=$(uname -r) && "
             "PKG=$(apt-cache search \"linux-modules-nvidia.*${KERNEL}\" 2>/dev/null | head -1 | awk '{print $1}') && "
@@ -365,17 +375,14 @@ def load_nvidia_modules(host: str, user: str, key_file: str) -> bool:
             "fi"
         )
         install_result = _ssh(install_cmd, timeout=600)
-        print(f"[ec2] install result: {install_result.stdout.strip()}", file=sys.stderr)
+        log(f"[ec2] install result: {install_result.stdout.strip()}")
         result = _ssh("sudo modprobe nvidia nvidia-uvm nvidia-modeset")
         loaded = result.returncode == 0 or "already" in result.stderr.lower()
 
     if loaded:
-        print("[ec2] NVIDIA modules loaded successfully", file=sys.stderr)
+        log("[ec2] NVIDIA modules loaded successfully")
     else:
-        print(
-            f"[ec2] modprobe failed (rc={result.returncode}): {result.stderr.strip()}",
-            file=sys.stderr,
-        )
+        log(f"[ec2] modprobe failed (rc={result.returncode}): {result.stderr.strip()}")
         return False
 
     # Locate nvidia-smi and symlink it to /usr/local/bin which is in PATH
@@ -395,7 +402,7 @@ def load_nvidia_modules(host: str, user: str, key_file: str) -> bool:
         "fi"
     )
     r = _ssh(locate_and_link, timeout=120)
-    print(f"[ec2] nvidia-smi setup: {r.stdout.strip()}", file=sys.stderr)
+    log(f"[ec2] nvidia-smi setup: {r.stdout.strip()}")
 
     # Wait until nvidia-smi actually communicates with the driver.
     # After modprobe the kernel module can take a few seconds to fully
@@ -412,9 +419,9 @@ def load_nvidia_modules(host: str, user: str, key_file: str) -> bool:
         "echo \"[nvidia] WARNING: driver did not become ready after 45s\"; exit 1"
     )
     r = _ssh(wait_cmd, timeout=90)
-    print(f"[ec2] nvidia-smi wait: {r.stdout.strip()}", file=sys.stderr)
+    log(f"[ec2] nvidia-smi wait: {r.stdout.strip()}")
     if r.returncode != 0:
-        print("[ec2] warning: nvidia-smi did not report GPUs — driver may not be loaded", file=sys.stderr)
+        log("[ec2] warning: nvidia-smi did not report GPUs — driver may not be loaded")
 
     # Persist modules across reboots by adding to /etc/modules.
     # This ensures nvidia-smi is available immediately after every boot
@@ -426,19 +433,18 @@ def load_nvidia_modules(host: str, user: str, key_file: str) -> bool:
     )
     persist_result = _ssh(persist_cmd)
     if persist_result.returncode == 0:
-        print("[ec2] NVIDIA modules persisted in /etc/modules", file=sys.stderr)
+        log("[ec2] NVIDIA modules persisted in /etc/modules")
     else:
-        print(
+        log(
             f"[ec2] warning: could not persist modules to /etc/modules: "
-            f"{persist_result.stderr.strip()}",
-            file=sys.stderr,
+            f"{persist_result.stderr.strip()}"
         )
 
     # Restart Docker so the NVIDIA container runtime picks up the freshly
     # loaded kernel modules. Without this restart, `docker run --gpus all`
     # fails with "could not select device driver" after stop/start or reboot.
     r = _ssh("sudo systemctl restart docker 2>/dev/null || true", timeout=30)
-    print("[ec2] Docker restarted to pick up NVIDIA modules", file=sys.stderr)
+    log("[ec2] Docker restarted to pick up NVIDIA modules")
 
     return True
 

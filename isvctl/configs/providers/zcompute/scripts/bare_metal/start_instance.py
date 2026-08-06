@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from common.client import get_client  # noqa: E402
 from common.ec2 import (  # noqa: E402
     load_nvidia_modules,
+    log,
     poll_instance_state,
     wait_for_public_ip,
 )
@@ -72,10 +73,7 @@ def main() -> int:
         inst = resp["Reservations"][0]["Instances"][0]
         current_state = inst["State"]["Name"]
         result["previous_state"] = current_state
-        print(
-            f"[start] instance {args.instance_id} current state: {current_state}",
-            file=sys.stderr,
-        )
+        log(f"[start] instance {args.instance_id} current state: {current_state}")
 
         if current_state == "running":
             result["state"] = "running"
@@ -89,29 +87,39 @@ def main() -> int:
             return 1
         else:
             if current_state == "stopping":
-                print("[start] waiting for instance to finish stopping ...", file=sys.stderr)
+                log("[start] waiting for instance to finish stopping ...")
                 poll_instance_state(ec2, args.instance_id, ["stopped"], timeout=900, interval=30)
 
             if args.pre_start_delay > 0:
-                print(
+                log(
                     f"[start] waiting {args.pre_start_delay}s for GPU resource "
-                    "release after stop ...",
-                    file=sys.stderr,
+                    "release after stop ..."
                 )
                 time.sleep(args.pre_start_delay)
 
             # Retry start_instances if the instance bounces back to 'stopped'
-            # (resource pool not yet released) — bare-metal path allows more
-            # retries and a longer per-attempt wait than the VM path.
-            MAX_START_RETRIES = 4
+            # (resource pool not yet released) — bare-metal path allows a long
+            # total retry budget. A live run (Aviv/Amit, 2026-08-06) showed
+            # start_instances getting rejected outright (InternalServerError)
+            # for the whole ~20 min the old fixed-4-retries-at-300s budget
+            # allowed, well before this real GB200 hardware was actually ready
+            # to accept a new start call after a full physical stop cycle.
+            # Retrying on a 4-hour wall-clock deadline instead of a fixed
+            # attempt count so however long this platform actually needs, the
+            # retry loop keeps trying instead of giving up early.
+            RETRY_BUDGET_SECONDS = 14400  # 4 hours total
             RESOURCE_WAIT_SECONDS = 300
             final_state = "stopped"
 
             last_start_error: ClientError | None = None
-            for attempt in range(MAX_START_RETRIES):
-                print(
-                    f"[start] calling start_instances (attempt {attempt + 1}/{MAX_START_RETRIES}) ...",
-                    file=sys.stderr,
+            retry_deadline = time.monotonic() + RETRY_BUDGET_SECONDS
+            attempt = 0
+            while True:
+                attempt += 1
+                remaining = retry_deadline - time.monotonic()
+                log(
+                    f"[start] calling start_instances (attempt {attempt}, "
+                    f"~{remaining / 60:.0f}m left in retry budget) ..."
                 )
                 # start_instances itself can transiently fail right after a
                 # stop (e.g. InvalidInstanceID.NotFound - confirmed live
@@ -127,17 +135,13 @@ def main() -> int:
                 except ClientError as e:
                     last_start_error = e
                     code = e.response.get("Error", {}).get("Code", "")
-                    print(
-                        f"[start] start_instances call failed ({code}): {e}",
-                        file=sys.stderr,
-                    )
-                    if attempt < MAX_START_RETRIES - 1:
-                        print(f"[start] retrying in {RESOURCE_WAIT_SECONDS}s ...", file=sys.stderr)
-                        time.sleep(RESOURCE_WAIT_SECONDS)
-                        continue
-                    else:
-                        print("[start] exhausted retries; instance could not start.", file=sys.stderr)
+                    log(f"[start] start_instances call failed ({code}): {e}")
+                    if time.monotonic() + RESOURCE_WAIT_SECONDS >= retry_deadline:
+                        log("[start] exhausted 4-hour retry budget; instance could not start.")
                         break
+                    log(f"[start] retrying in {RESOURCE_WAIT_SECONDS}s ...")
+                    time.sleep(RESOURCE_WAIT_SECONDS)
+                    continue
 
                 # Bare metal needs a longer per-attempt budget: full POST/BIOS/OS boot.
                 final_state = poll_instance_state(
@@ -145,18 +149,17 @@ def main() -> int:
                 )
 
                 if final_state == "running":
-                    print("[start] instance is running.", file=sys.stderr)
+                    log("[start] instance is running.")
                     break
 
-                if attempt < MAX_START_RETRIES - 1:
-                    print(
-                        f"[start] instance returned to stopped (GPU resources not yet available). "
-                        f"Waiting {RESOURCE_WAIT_SECONDS}s before retry ...",
-                        file=sys.stderr,
-                    )
-                    time.sleep(RESOURCE_WAIT_SECONDS)
-                else:
-                    print("[start] exhausted retries; instance could not start.", file=sys.stderr)
+                if time.monotonic() + RESOURCE_WAIT_SECONDS >= retry_deadline:
+                    log("[start] exhausted 4-hour retry budget; instance could not start.")
+                    break
+                log(
+                    f"[start] instance returned to stopped (GPU resources not yet available). "
+                    f"Waiting {RESOURCE_WAIT_SECONDS}s before retry ..."
+                )
+                time.sleep(RESOURCE_WAIT_SECONDS)
 
             if final_state != "running" and last_start_error is not None and not result["start_initiated"]:
                 result["error"] = str(last_start_error)
@@ -192,10 +195,7 @@ def main() -> int:
                 # Instance state says running, but SSH never came up - retry
                 # once more before giving up rather than silently reporting
                 # success based on instance state alone (Aviv, 2026-08-03).
-                print(
-                    "[start] instance running but SSH did not respond; retrying SSH wait once more ...",
-                    file=sys.stderr,
-                )
+                log("[start] instance running but SSH did not respond; retrying SSH wait once more ...")
                 time.sleep(60)
                 ssh_ready = wait_for_ssh(private_ip, args.ssh_user, args.key_file, max_attempts=80, interval=15)
             if ssh_ready:

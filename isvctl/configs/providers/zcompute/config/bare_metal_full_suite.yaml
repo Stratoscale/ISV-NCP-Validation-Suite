@@ -156,9 +156,12 @@ commands:
           - "{{steps.launch_instance.key_file}}"
           - "--pre-start-delay"
           - "600"
-        # Matches bare_metal_lifecycle_only.yaml - accounts for
-        # start_instance.py's SSH-wait retry (2026-08-03).
-        timeout: 16200
+        # start_instance.py now retries on a 4-hour (14400s) internal wall-clock
+        # budget (Aviv/Amit, 2026-08-06 - the old fixed 4-retries budget was far
+        # too short for real GB200 hardware). Outer timeout must clear that plus
+        # pre-start-delay (600s) and the post-running SSH-wait/module-load
+        # overhead - matches power_cycle_instance's budget below for consistency.
+        timeout: 19200
 
       - name: reboot_instance
         phase: test
