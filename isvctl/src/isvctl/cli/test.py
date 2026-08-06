@@ -15,6 +15,7 @@ Handles the test lifecycle: setup cluster, run tests, teardown.
 
 import json
 import logging
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,17 +35,40 @@ from isvctl.reporting import check_upload_credentials, create_test_run, get_envi
 
 logger = logging.getLogger(__name__)
 
+# Matches the leading "%Y-%m-%d %H:%M:%S" already emitted by logging.basicConfig
+# (see cli/__init__.py:setup_logging) - lines that already carry that timestamp
+# (logger.info/warning/error output, also routed through TeeWriter below) are
+# left alone rather than double-stamped.
+_ALREADY_TIMESTAMPED_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+
 
 class TeeWriter:
-    """Writes to multiple streams simultaneously (like Unix `tee`)."""
+    """Writes to multiple streams simultaneously (like Unix `tee`), stamping
+    each untimestamped line with a wall-clock prefix.
+
+    A test run's "test" phase can stream live output (pytest's own -v
+    reporter, SubTests pass/fail lines) for hours with no timestamp at all
+    otherwise, making it impossible to tell when a given line happened when
+    reading back the tee'd log file (Aviv/Amit, 2026-08-06).
+    """
 
     def __init__(self, terminal: TextIO, file: TextIO) -> None:
         self._terminal = terminal
         self._file = file
+        self._at_line_start = True
 
     def write(self, s: str) -> int:
-        self._terminal.write(s)
-        self._file.write(s)
+        out_parts = []
+        for line in s.splitlines(keepends=True):
+            content = line
+            if self._at_line_start and line.strip("\n") and not _ALREADY_TIMESTAMPED_RE.match(line):
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                content = f"[{ts}] {line}"
+            out_parts.append(content)
+            self._at_line_start = line.endswith("\n")
+        stamped = "".join(out_parts)
+        self._terminal.write(stamped)
+        self._file.write(stamped)
         return len(s)
 
     def writelines(self, lines: list[str]) -> None:
