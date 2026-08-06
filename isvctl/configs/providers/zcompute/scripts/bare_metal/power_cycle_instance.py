@@ -25,6 +25,7 @@ Output JSON:
     "key_file": "/tmp/isv-bm-test-key.pem",
     "power_cycle_initiated": true,
     "power_was_off": true,
+    "time_to_stopped_seconds": 842.3,
     "ssh_ready": true,
     "recovery_seconds": 900
 }
@@ -43,7 +44,7 @@ from botocore.exceptions import ClientError
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from common.client import get_client  # noqa: E402
-from common.ec2 import load_nvidia_modules, poll_instance_state, wait_for_public_ip  # noqa: E402
+from common.ec2 import load_nvidia_modules, log, poll_instance_state, wait_for_public_ip  # noqa: E402
 from common.ssh_utils import wait_for_ssh  # noqa: E402
 
 
@@ -69,6 +70,7 @@ def main() -> int:
         "ssh_user": args.ssh_user,
         "power_cycle_initiated": False,
         "power_was_off": False,
+        "time_to_stopped_seconds": None,
         "ssh_ready": False,
         "recovery_seconds": None,
     }
@@ -76,7 +78,7 @@ def main() -> int:
     ec2 = get_client("ec2", region=args.region)
 
     try:
-        print("[power-cycle] verifying instance is running before power-cycle ...", file=sys.stderr)
+        log("[power-cycle] verifying instance is running before power-cycle ...")
         resp = ec2.describe_instances(InstanceIds=[args.instance_id])
         inst = resp["Reservations"][0]["Instances"][0]
         current_state = inst["State"]["Name"]
@@ -89,56 +91,76 @@ def main() -> int:
 
         start_time = time.monotonic()
 
-        print(f"[power-cycle] force-stopping instance {args.instance_id} ...", file=sys.stderr)
+        log(f"[power-cycle] force-stopping instance {args.instance_id} ...")
         try:
             ec2.stop_instances(InstanceIds=[args.instance_id], Force=True)
         except ClientError as e:
-            print(
+            log(
                 f"[power-cycle] Force=True rejected ({e.response.get('Error', {}).get('Code')}), "
-                "falling back to a plain stop_instances call",
-                file=sys.stderr,
+                "falling back to a plain stop_instances call"
             )
             ec2.stop_instances(InstanceIds=[args.instance_id])
         result["power_cycle_initiated"] = True
 
-        # Bare-metal hardware power-down can take up to ~30 min.
-        poll_instance_state(ec2, args.instance_id, ["stopped"], timeout=1800, interval=30)
+        # Bare-metal hardware power-down (BMC/IPMI) can take far longer than
+        # the ~30 min originally assumed here - bumped generously (Aviv,
+        # 2026-08-06: "be very kind with your timeouts, bump it up").
+        stop_start = time.monotonic()
+        poll_instance_state(ec2, args.instance_id, ["stopped"], timeout=7200, interval=30)
+        time_to_stopped = round(time.monotonic() - stop_start, 1)
         result["power_was_off"] = True
-        print("[power-cycle] instance stopped (powered off)", file=sys.stderr)
+        result["time_to_stopped_seconds"] = time_to_stopped
+        log(f"[power-cycle] instance stopped (powered off) {time_to_stopped}s after stop was issued")
 
         if args.pre_start_delay > 0:
-            print(
-                f"[power-cycle] waiting {args.pre_start_delay}s for GPU resource release ...",
-                file=sys.stderr,
-            )
+            log(f"[power-cycle] waiting {args.pre_start_delay}s for GPU resource release ...")
             time.sleep(args.pre_start_delay)
 
-        # Same bounce-back retry logic as start_instance.py.
-        MAX_START_RETRIES = 4
+        # Retry start_instances on a 4-hour wall-clock budget instead of a
+        # fixed attempt count - same rationale/fix as start_instance.py
+        # (Aviv/Amit, 2026-08-06): real GB200 hardware can reject
+        # start_instances outright for well longer than a handful of
+        # 300s-apart retries allowed for.
+        RETRY_BUDGET_SECONDS = 14400  # 4 hours total
         RESOURCE_WAIT_SECONDS = 300
         final_state = "stopped"
 
-        for attempt in range(MAX_START_RETRIES):
-            print(
-                f"[power-cycle] starting instance (cold boot, attempt {attempt + 1}/{MAX_START_RETRIES}) ...",
-                file=sys.stderr,
+        retry_deadline = time.monotonic() + RETRY_BUDGET_SECONDS
+        attempt = 0
+        while True:
+            attempt += 1
+            remaining = retry_deadline - time.monotonic()
+            log(
+                f"[power-cycle] starting instance (cold boot, attempt {attempt}, "
+                f"~{remaining / 60:.0f}m left in retry budget) ..."
             )
-            ec2.start_instances(InstanceIds=[args.instance_id])
+            try:
+                ec2.start_instances(InstanceIds=[args.instance_id])
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code", "")
+                log(f"[power-cycle] start_instances call failed ({code}): {e}")
+                if time.monotonic() + RESOURCE_WAIT_SECONDS >= retry_deadline:
+                    log("[power-cycle] exhausted 4-hour retry budget; instance could not start.")
+                    break
+                log(f"[power-cycle] retrying in {RESOURCE_WAIT_SECONDS}s ...")
+                time.sleep(RESOURCE_WAIT_SECONDS)
+                continue
 
             final_state = poll_instance_state(
                 ec2, args.instance_id, ["running", "stopped"], timeout=2700, interval=30
             )
             if final_state == "running":
-                print("[power-cycle] instance is running.", file=sys.stderr)
+                log("[power-cycle] instance is running.")
                 break
 
-            if attempt < MAX_START_RETRIES - 1:
-                print(
-                    f"[power-cycle] instance returned to stopped; waiting "
-                    f"{RESOURCE_WAIT_SECONDS}s before retry ...",
-                    file=sys.stderr,
-                )
-                time.sleep(RESOURCE_WAIT_SECONDS)
+            if time.monotonic() + RESOURCE_WAIT_SECONDS >= retry_deadline:
+                log("[power-cycle] exhausted 4-hour retry budget; instance could not start.")
+                break
+            log(
+                f"[power-cycle] instance returned to stopped; waiting "
+                f"{RESOURCE_WAIT_SECONDS}s before retry ..."
+            )
+            time.sleep(RESOURCE_WAIT_SECONDS)
 
         result["state"] = final_state
 
@@ -159,21 +181,17 @@ def main() -> int:
         if fresh_ip and fresh_ip not in ("", "None"):
             result["public_ip"] = fresh_ip
         else:
-            print(
+            log(
                 "[power-cycle] no public IP yet after power-cycle - continuing anyway, "
-                "private_ip is what actually matters",
-                file=sys.stderr,
+                "private_ip is what actually matters"
             )
 
-        print("[power-cycle] waiting for SSH to be ready ...", file=sys.stderr)
+        log("[power-cycle] waiting for SSH to be ready ...")
         ssh_ready = wait_for_ssh(result["private_ip"], args.ssh_user, args.key_file, max_attempts=80, interval=15)
         if not ssh_ready:
             # Retry once more before giving up rather than failing on a
             # single SSH-wait window (Aviv, 2026-08-03).
-            print(
-                "[power-cycle] SSH did not respond; retrying SSH wait once more ...",
-                file=sys.stderr,
-            )
+            log("[power-cycle] SSH did not respond; retrying SSH wait once more ...")
             time.sleep(60)
             ssh_ready = wait_for_ssh(result["private_ip"], args.ssh_user, args.key_file, max_attempts=80, interval=15)
         result["ssh_ready"] = ssh_ready
@@ -188,10 +206,7 @@ def main() -> int:
         result["nvidia_modules_loaded"] = nvidia_ok
 
         result["success"] = final_state == "running"
-        print(
-            f"[power-cycle] completed successfully! (recovery={result['recovery_seconds']}s)",
-            file=sys.stderr,
-        )
+        log(f"[power-cycle] completed successfully! (recovery={result['recovery_seconds']}s)")
 
     except ClientError as e:
         result["error"] = str(e)

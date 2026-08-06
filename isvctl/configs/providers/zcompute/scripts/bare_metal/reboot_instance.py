@@ -93,8 +93,10 @@ def main() -> int:
         )
         time.sleep(args.wait_before_check)
 
-        # Bare-metal status checks can take 5-10 min after reboot.
-        final_state = poll_instance_state(ec2, args.instance_id, ["running"], timeout=1800, interval=30)
+        # Bare-metal status checks can take 5-10 min after reboot - bumped
+        # generously (Aviv, 2026-08-06: "be very kind with your timeouts,
+        # bump it up").
+        final_state = poll_instance_state(ec2, args.instance_id, ["running"], timeout=3600, interval=30)
         result["state"] = final_state
 
         # Re-fetch the private IP rather than trusting the one passed in -

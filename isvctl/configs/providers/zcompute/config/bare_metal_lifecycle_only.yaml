@@ -107,7 +107,10 @@ commands:
           - "{{steps.launch_instance.instance_id}}"
           - "--region"
           - "{{region}}"
-        timeout: 2100
+        # stop_instance.py's internal poll-for-'stopped' timeout was bumped
+        # from 1800s to 7200s (Aviv, 2026-08-06: "be very kind with your
+        # timeouts, bump it up") - outer timeout cleared to match with margin.
+        timeout: 7800
 
       - name: start_instance
         phase: test
@@ -121,10 +124,12 @@ commands:
           - "{{steps.launch_instance.key_file}}"
           - "--pre-start-delay"
           - "600"
-        # See bare_metal_lifecycle_debug.yaml for the worst-case math behind
-        # this number - now accounts for start_instance.py's SSH-wait retry
-        # (2026-08-03).
-        timeout: 16200
+        # start_instance.py now retries on a 4-hour (14400s) internal wall-clock
+        # budget (Aviv/Amit, 2026-08-06 - the old fixed 4-retries budget was far
+        # too short for real GB200 hardware). Outer timeout must clear that plus
+        # pre-start-delay (600s) and the post-running SSH-wait/module-load
+        # overhead - matches power_cycle_instance's budget below for consistency.
+        timeout: 19200
 
       - name: reboot_instance
         phase: test
@@ -140,9 +145,10 @@ commands:
           - "{{steps.launch_instance.private_ip}}"
           - "--wait-before-check"
           - "180"
-        # reboot_instance.py now retries the ssh wait once on failure
-        # (2026-08-03) - bumped from 3600 for the added retry's worst case.
-        timeout: 5400
+        # reboot_instance.py's internal poll-for-'running' timeout was bumped
+        # from 1800s to 3600s (Aviv, 2026-08-06: "be very kind with your
+        # timeouts, bump it up") - outer timeout cleared to match with margin.
+        timeout: 7200
 
       - name: power_cycle_instance
         phase: test
@@ -156,10 +162,13 @@ commands:
           - "{{steps.launch_instance.key_file}}"
           - "--pre-start-delay"
           - "600"
-        # power_cycle_instance.py now retries the ssh wait once on failure,
-        # and waits up to 600s (was 120s) for the EIP to reappear (both
-        # 2026-08-03) - bumped further for the added time.
-        timeout: 19200
+        # power_cycle_instance.py now also uses a 4-hour internal
+        # start_instances retry budget and a 7200s stop poll (matching
+        # start_instance.py/stop_instance.py's fixes) instead of the old
+        # fixed-4-retries budget - outer timeout bumped generously to clear
+        # that (Aviv, 2026-08-06: "be very kind with your timeouts, bump it
+        # up").
+        timeout: 28800
 
       - name: describe_instance
         phase: test

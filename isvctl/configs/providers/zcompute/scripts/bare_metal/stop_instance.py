@@ -10,7 +10,8 @@ Output JSON:
     "platform": "bm",
     "instance_id": "i-xxx",
     "previous_state": "running",
-    "state": "stopped"
+    "state": "stopped",
+    "time_to_stopped_seconds": 842.3
 }
 """
 
@@ -20,6 +21,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from typing import Any
 
 from botocore.exceptions import ClientError
@@ -40,6 +42,7 @@ def main() -> int:
         "platform": "bm",
         "instance_id": args.instance_id,
         "stop_initiated": False,
+        "time_to_stopped_seconds": None,
     }
 
     ec2 = get_client("ec2", region=args.region)
@@ -55,6 +58,7 @@ def main() -> int:
             result["state"] = "stopped"
             result["stop_initiated"] = True
             result["success"] = True
+            result["time_to_stopped_seconds"] = 0
             result["note"] = "Instance was already stopped"
             print(json.dumps(result, indent=2))
             return 0
@@ -66,14 +70,21 @@ def main() -> int:
             print(json.dumps(result, indent=2))
             return 1
 
+        stop_start = time.monotonic()
         log(f"[stop] stopping instance {args.instance_id} ...")
         ec2.stop_instances(InstanceIds=[args.instance_id])
         result["stop_initiated"] = True
 
-        # Bare-metal hardware power-down can take up to ~30 min.
+        # Bare-metal hardware power-down (BMC/IPMI) can take far longer than
+        # the ~30 min originally assumed here - bumped generously (Aviv,
+        # 2026-08-06: "be very kind with your timeouts, bump it up").
         final_state = poll_instance_state(
-            ec2, args.instance_id, ["stopped"], timeout=1800, interval=30
+            ec2, args.instance_id, ["stopped"], timeout=7200, interval=30
         )
+
+        time_to_stopped = round(time.monotonic() - stop_start, 1)
+        result["time_to_stopped_seconds"] = time_to_stopped
+        log(f"[stop] instance reached '{final_state}' state {time_to_stopped}s after stop was issued")
 
         result["state"] = final_state
         result["success"] = final_state == "stopped"
