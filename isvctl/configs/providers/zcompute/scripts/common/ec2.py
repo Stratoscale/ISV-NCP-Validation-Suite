@@ -14,12 +14,50 @@ zcompute-specific notes:
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
 from typing import Any
 
 from botocore.exceptions import ClientError
+
+# If set, load_nvidia_modules/setup_gpu_dependencies use password auth via
+# sshpass instead of key_file - same override as ssh_utils.py's
+# wait_for_ssh/run_ssh_command, isvtest.core.ssh.get_ssh_client, and
+# shared/deploy_nim.py/teardown_nim.py. Never hardcode the password anywhere;
+# export it locally in your own shell only.
+_SSH_PASSWORD_ENV_VAR = "ISVTEST_SSH_PASSWORD"
+
+
+def _ssh_command_prefix(user: str, host: str, key_file: str) -> list[str]:
+    """Build the `ssh`/`sshpass ssh` argument prefix up to (but not including) the remote command."""
+    password = os.environ.get(_SSH_PASSWORD_ENV_VAR)
+    if password:
+        if not shutil.which("sshpass"):
+            raise RuntimeError(
+                f"{_SSH_PASSWORD_ENV_VAR} is set but 'sshpass' is not installed. "
+                "Install it (e.g. `sudo apt-get install -y sshpass`) or unset "
+                f"{_SSH_PASSWORD_ENV_VAR} to use key-based auth instead."
+            )
+        return [
+            "sshpass", "-p", password, "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=10",
+            "-o", "BatchMode=no",
+            "-o", "PreferredAuthentications=password",
+            "-o", "PubkeyAuthentication=no",
+            f"{user}@{host}",
+        ]
+    return [
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=10",
+        "-o", "BatchMode=yes",
+        "-i", key_file, f"{user}@{host}",
+    ]
 
 
 def poll_instance_state(
@@ -296,12 +334,7 @@ def load_nvidia_modules(host: str, user: str, key_file: str) -> bool:
     """
     def _ssh(command: str, timeout: int = 60) -> subprocess.CompletedProcess:
         return subprocess.run(
-            ["ssh",
-             "-o", "StrictHostKeyChecking=no",
-             "-o", "UserKnownHostsFile=/dev/null",  # prevent known_hosts conflicts between VMs
-             "-o", "ConnectTimeout=10",
-             "-o", "BatchMode=yes",
-             "-i", key_file, f"{user}@{host}", command],
+            [*_ssh_command_prefix(user, host, key_file), command],
             capture_output=True, text=True, timeout=timeout,
         )
 
@@ -421,8 +454,7 @@ def setup_gpu_dependencies(host: str, user: str, key_file: str) -> dict[str, boo
 
     def _ssh(command: str, timeout: int = 600) -> subprocess.CompletedProcess:
         return subprocess.run(
-            ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
-             "-o", "BatchMode=yes", "-i", key_file, f"{user}@{host}", command],
+            [*_ssh_command_prefix(user, host, key_file), command],
             capture_output=True, text=True, timeout=timeout,
         )
 

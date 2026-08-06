@@ -31,6 +31,7 @@ Requires: paramiko
 
 import argparse
 import json
+import os
 import re
 import sys
 from typing import Any
@@ -41,17 +42,34 @@ _CONTAINER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 def ssh_connect(host: str, user: str, key_file: str) -> paramiko.SSHClient:
-    """Create SSH connection to remote host."""
+    """Create SSH connection to remote host.
+
+    If ISVTEST_SSH_PASSWORD is set, uses password auth instead of key_file -
+    same override as isvtest.core.ssh.get_ssh_client and
+    zcompute's ssh_utils.py. Never hardcode the password; export it locally
+    in your own shell only.
+    """
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(
-        hostname=host,
-        username=user,
-        key_filename=key_file,
-        timeout=30,
-        allow_agent=False,
-        look_for_keys=False,
-    )
+    password = os.environ.get("ISVTEST_SSH_PASSWORD")
+    if password:
+        client.connect(
+            hostname=host,
+            username=user,
+            password=password,
+            timeout=30,
+            allow_agent=False,
+            look_for_keys=False,
+        )
+    else:
+        client.connect(
+            hostname=host,
+            username=user,
+            key_filename=key_file,
+            timeout=30,
+            allow_agent=False,
+            look_for_keys=False,
+        )
     return client
 
 

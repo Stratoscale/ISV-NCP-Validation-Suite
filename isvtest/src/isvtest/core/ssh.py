@@ -25,6 +25,7 @@ Requires paramiko: pip install paramiko
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -33,6 +34,14 @@ if TYPE_CHECKING:
     import paramiko
 
 log = logging.getLogger(__name__)
+
+# If set, all get_ssh_client() connections use password auth instead of the
+# supplied key file - for instances where the key file doesn't match what's
+# actually registered. Never hardcode the password anywhere; export it locally
+# in your own shell only. Shared with
+# isvctl/configs/providers/zcompute/scripts/common/ssh_utils.py's fallback so
+# one export covers both the provisioning scripts and the actual checks below.
+_SSH_PASSWORD_ENV_VAR = "ISVTEST_SSH_PASSWORD"
 
 
 def get_ssh_client(
@@ -61,19 +70,31 @@ def get_ssh_client(
     """
     import paramiko
 
+    password = os.environ.get(_SSH_PASSWORD_ENV_VAR)
+
     last_error: Exception | None = None
     for attempt in range(1, retries + 1):
         ssh_client = paramiko.SSHClient()
         ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
-            ssh_client.connect(
-                hostname=host,
-                username=user,
-                key_filename=key_path,
-                timeout=timeout,
-                allow_agent=False,
-                look_for_keys=False,
-            )
+            if password:
+                ssh_client.connect(
+                    hostname=host,
+                    username=user,
+                    password=password,
+                    timeout=timeout,
+                    allow_agent=False,
+                    look_for_keys=False,
+                )
+            else:
+                ssh_client.connect(
+                    hostname=host,
+                    username=user,
+                    key_filename=key_path,
+                    timeout=timeout,
+                    allow_agent=False,
+                    look_for_keys=False,
+                )
             return ssh_client
         except (OSError, paramiko.SSHException) as e:
             last_error = e
