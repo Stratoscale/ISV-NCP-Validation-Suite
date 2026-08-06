@@ -42,7 +42,21 @@ tests:
       checks:
         K8sCncfConformanceCheck:
           mode: certified-conformance   # runs [Conformance] tests, no disruptive skip
-          timeout: 10800                # 3 hours — EKS-D on zCompute is slower than AWS
+          # First attempt at 10800s (3h) on this cluster did not finish (2026-08-05) -
+          # was still "Running" at the timeout with the suite mid-way through. This
+          # cluster only has 3 nodes (1 control-plane + 2 GPU workers) vs the
+          # documented full topology in CLUSTER-SETUP.md (1 control-plane + 2 CPU
+          # workers + 2 GPU workers) - the 2 CPU-only workers are absent here, so
+          # there's less parallelism available for the thousands of dynamically
+          # spawned e2e test pods than the 3h estimate assumed. Also found (same run)
+          # and fixed a real bug on this cluster's control-plane: kube-apiserver was
+          # still running --service-node-port-range=20000-32767 (CLUSTER-SETUP.md
+          # §10c's documented fix had never been applied here) causing
+          # "out-of-range nodePort" failures in [sig-network] Services tests -
+          # patched to 30000-32767 on 2026-08-06, confirmed live. Doubled the
+          # timeout to give this smaller topology enough wall-clock time; revisit
+          # down if a passing run finishes well under it.
+          timeout: 21600                # 6 hours
           startup_timeout: 600          # time for registry.k8s.io/conformance image pull
 
   exclude:
