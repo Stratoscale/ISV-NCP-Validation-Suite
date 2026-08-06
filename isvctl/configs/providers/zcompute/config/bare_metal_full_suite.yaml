@@ -48,7 +48,7 @@ commands:
         command: "python3 ../scripts/bare_metal/launch_instance.py"
         args:
           - "--name"
-          - "isv-bm-test-gpu"
+          - "BM-run-1"
           - "--instance-type"
           - "{{instance_type}}"
           - "--region"
