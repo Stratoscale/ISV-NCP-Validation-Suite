@@ -48,7 +48,7 @@ commands:
         command: "python3 ../scripts/bare_metal/launch_instance.py"
         args:
           - "--name"
-          - "BM-2"
+          - "BM-3"
           - "--instance-type"
           - "{{instance_type}}"
           - "--region"
