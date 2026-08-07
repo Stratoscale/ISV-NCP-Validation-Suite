@@ -162,6 +162,14 @@ spec:
             - key: "nvidia.com/gpu"
               operator: "Exists"
               effect: "NoSchedule"
+            # On topologies where the control-plane node itself carries a GPU
+            # (e.g. a 2-node lab cluster with no dedicated GPU-only workers),
+            # this toleration is required for a worker to land there when the
+            # other GPU node's capacity is already claimed by a sibling worker
+            # - matches the Launcher's existing control-plane toleration above.
+            - key: "node-role.kubernetes.io/control-plane"
+              operator: "Exists"
+              effect: "NoSchedule"
           volumes:
             - name: infiniband
               hostPath:

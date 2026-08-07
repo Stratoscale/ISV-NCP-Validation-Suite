@@ -115,11 +115,24 @@ class K8sGpuStressWorkload(BaseWorkloadCheck):
 
             kubectl_base = get_kubectl_base_shell()
 
+            last_phase = None
             while time.time() < end_time:
                 time.sleep(5)
                 cmd = f"{kubectl_base} get pod {pod_name} -n {namespace} -o jsonpath='{{.status.phase}}'"
                 res = self.runner.run(cmd)
+
+                if res.exit_code != 0:
+                    # Don't silently spin to the timeout on a transient kubectl
+                    # error (e.g. API hiccup) - empty stdout otherwise matches
+                    # neither "Succeeded" nor "Failed" and masks a pod that may
+                    # have already finished (2026-08-07).
+                    self.log.warning(f"kubectl get pod {pod_name} failed (exit {res.exit_code}): {res.stderr}")
+                    continue
+
                 phase = res.stdout.strip()
+                if phase != last_phase:
+                    self.log.info(f"Pod {pod_name} phase: {phase or '(empty)'}")
+                    last_phase = phase
 
                 if phase == "Succeeded":
                     pod_status = "Succeeded"
