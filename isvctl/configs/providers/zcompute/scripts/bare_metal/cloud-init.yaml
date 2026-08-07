@@ -1,17 +1,13 @@
 #cloud-config
 # BM instance bootstrap: enrolls into the lab WireGuard VPN mesh (needed to
-# reach the instance's private IP from the run station) and relaxes SSH auth
-# for lab access. Provided by the zcompute infra team, with one change: the
-# original ssh_authorized_keys entry is replaced with a password login
-# (ubuntu / 1q2w3e4r) - nothing else here was touched, so the wg-enroll flow
-# is unaffected.
-ssh_pwauth: true
-chpasswd:
-  expire: false
-  users:
-    - name: ubuntu
-      password: 1q2w3e4r
-      type: text
+# reach the instance's private IP from the run station) and sets up SSH
+# access via a fixed key pair. As originally provided by the zcompute infra
+# team - nothing else here touched. Public half of Amit's dedicated
+# amit-key pair (2026-08-07) - zcompute's own RunInstances
+# KeyName->authorized_keys injection isn't reliable enough to depend on
+# alone, so this is set explicitly instead.
+ssh_authorized_keys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK7zF6uWQxu4eLpHK3sr3r4pqKK4PiqL94PeKPyExkKN amit-bm-key
 users:
     - default
 write_files:
@@ -68,5 +64,4 @@ runcmd:
   - systemctl daemon-reload
   - systemctl enable --now wg-quick@wg0
   - sed -i 's/^#\?MaxAuthTries.*/MaxAuthTries 99999/' /etc/ssh/sshd_config
-  - passwd -u ubuntu || true
   - systemctl restart ssh
