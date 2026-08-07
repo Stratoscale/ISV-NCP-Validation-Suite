@@ -113,8 +113,11 @@ def parse_driver_version(output: str) -> str | None:
     Returns:
         Driver version string (e.g., "580.95.05") or None if not found
     """
-    # Try full output format first: "Driver Version: 580.95.05"
-    match = re.search(r"Driver Version:\s+([\d.]+)", output)
+    # Try full output format first: "Driver Version: 580.95.05" - newer
+    # driver branches (confirmed on 610.57.04) relabel this "KMD Version:"
+    # (Kernel Mode Driver) instead, splitting it from a separate UMD/CUDA
+    # version field, so match either label (2026-08-07).
+    match = re.search(r"(?:Driver|KMD) Version:\s+([\d.]+)", output)
     if match:
         return match.group(1)
 
@@ -138,7 +141,10 @@ def parse_cuda_version(output: str) -> str | None:
     Note: This is the maximum CUDA version supported by the driver,
     not necessarily the installed CUDA toolkit version.
     """
-    match = re.search(r"CUDA Version:\s+(\d+\.\d+)", output)
+    # Newer driver branches (confirmed on 610.57.04) relabel this
+    # "CUDA UMD Version:" (User Mode Driver) instead of the classic
+    # "CUDA Version:" (2026-08-07).
+    match = re.search(r"CUDA(?: UMD)? Version:\s+(\d+\.\d+)", output)
     if match:
         return match.group(1)
     return None
