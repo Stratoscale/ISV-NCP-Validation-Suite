@@ -48,7 +48,7 @@ commands:
         command: "python3 ../scripts/bare_metal/launch_instance.py"
         args:
           - "--name"
-          - "BM-run-1"
+          - "BM-2"
           - "--instance-type"
           - "{{instance_type}}"
           - "--region"
@@ -59,6 +59,8 @@ commands:
           - "{{vpc_id}}"
           - "--subnet-id"
           - "{{subnet_id}}"
+          - "--key-name"
+          - "amit-key"
         timeout: 5400
 
       - name: list_instances
