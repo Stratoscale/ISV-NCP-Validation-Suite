@@ -240,25 +240,43 @@ def main() -> int:
 
         key_file = create_key_pair(ec2, args.key_name)
 
-        # zCompute returns RSA PKCS#1 keys; paramiko-based checks require
-        # OpenSSH format. Convert in-place.
-        try:
-            from cryptography.hazmat.backends import default_backend
-            from cryptography.hazmat.primitives import serialization
-
-            with open(key_file, "rb") as _f:
-                _pem = _f.read()
-            _key = serialization.load_pem_private_key(_pem, password=None, backend=default_backend())
-            _openssh = _key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.OpenSSH,
-                encryption_algorithm=serialization.NoEncryption(),
+        # cloud-init.yaml can hardcode a fixed ssh_authorized_keys entry
+        # instead of trusting zcompute's own KeyName->authorized_keys
+        # injection (which hasn't proven reliable enough to depend on
+        # alone). When that's the case, the private key create_key_pair()
+        # just generated is NOT what the instance will actually accept -
+        # override with the matching private key so every SSH call below
+        # (and every downstream step reading
+        # {{steps.launch_instance.key_file}}) uses the right one
+        # (2026-08-07).
+        ssh_key_override = os.environ.get("ZCOMPUTE_BM_SSH_KEY_FILE", "").strip()
+        if ssh_key_override:
+            key_file = ssh_key_override
+            print(
+                f"[launch] using fixed SSH key {key_file} (ZCOMPUTE_BM_SSH_KEY_FILE) "
+                "for SSH auth instead of the generated key pair",
+                file=sys.stderr,
             )
-            with open(key_file, "wb") as _f:
-                _f.write(_openssh)
-            print("[launch] key converted to OpenSSH format", file=sys.stderr)
-        except Exception as _e:
-            print(f"[launch] WARNING: key format conversion failed (non-fatal): {_e}", file=sys.stderr)
+        else:
+            # zCompute returns RSA PKCS#1 keys; paramiko-based checks require
+            # OpenSSH format. Convert in-place.
+            try:
+                from cryptography.hazmat.backends import default_backend
+                from cryptography.hazmat.primitives import serialization
+
+                with open(key_file, "rb") as _f:
+                    _pem = _f.read()
+                _key = serialization.load_pem_private_key(_pem, password=None, backend=default_backend())
+                _openssh = _key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.OpenSSH,
+                    encryption_algorithm=serialization.NoEncryption(),
+                )
+                with open(key_file, "wb") as _f:
+                    _f.write(_openssh)
+                print("[launch] key converted to OpenSSH format", file=sys.stderr)
+            except Exception as _e:
+                print(f"[launch] WARNING: key format conversion failed (non-fatal): {_e}", file=sys.stderr)
 
         sg_name = f"{args.name}-sg"
         sg_id = create_security_group(ec2, vpc_id, sg_name)
